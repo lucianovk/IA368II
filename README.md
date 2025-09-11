@@ -41,7 +41,13 @@ Watch on YouTube:
 
 - **Utilities**  
   - `angle_to_goal`: computes goal/robot angles and normalized error in CoppeliaSim’s frame (yaw=0 → +Y).  
-  - `local_to_world`: transforms offsets from robot frame to world frame.  
+  
+<p align="center">
+  <img src="angle_to_goal.png" alt="Angle to Goal" width="360" />
+  
+</p>
+
+- `local_to_world`: transforms offsets from robot frame to world frame.  
   - Random **obstacle generation** with non-overlapping cuboids (AABB checks), color/props set for detection/collision.
 
 ### Flow-Style Outline
