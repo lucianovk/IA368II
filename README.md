@@ -14,7 +14,9 @@ Both scripts support **manual control**, **autonomous navigation**, and **odomet
 
 Scene file: `lvk_obstacle_avoidance.ttt`
 
-<video src="lvk_obstacle_avoidance.webm" controls width="640" poster="lvk_obstacle_avoidance.png"></video>
+Assista no YouTube:
+
+[![Assistir no YouTube](https://img.youtube.com/vi/FzbglLwmXV4/hqdefault.jpg)](https://youtu.be/FzbglLwmXV4)
 
 ### Algorithmic Behavior
 The robot mimics the behavior of a simple household vacuum cleaner:
@@ -67,7 +69,9 @@ Additional features:
 
 Scene file: `lvk_navigation.ttt`
 
-<video src="lvk_navigation.webm" controls width="640" poster="lvk_navigation.png"></video>
+Assista no YouTube:
+
+[![Assistir no YouTube](https://img.youtube.com/vi/jaj2KY_krco/hqdefault.jpg)](https://youtu.be/jaj2KY_krco)
 
 ### Algorithmic Behavior
 This script models a more systematic vacuum cleaner with **coverage navigation** using **spiral waypoints**:
