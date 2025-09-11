@@ -1,4 +1,4 @@
-# Vacuum Cleaner Robot Simulation (CoppeliaSim + Python)
+# Vacuum Cleaner Robot Simulation (CoppeliaSim + Python) 
 
 ![Spiral Coverage](lvk_navigation.png)
 
