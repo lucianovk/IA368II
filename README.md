@@ -30,6 +30,8 @@ Watch on YouTube:
   - Converts (v, ω) into per-wheel angular speeds with saturation and applies them to motors.  
   - Declares **arrival** when within a tolerance radius and stops both wheels.
 
+  See details: [go_to_point controller](go_to_point.md)
+
 - **Obstacle handling (proximity sensor)**  
   - On detection, the robot **creates a temporary avoidance goal** in front, offset laterally (left/right) and slightly beyond the obstacle distance.  
   - If already avoiding and a new obstacle is seen, it **removes the current goal** and keeps the lateral side consistent to prevent oscillation.  
