@@ -18,7 +18,9 @@ This script models a more systematic vacuum cleaner with **coverage navigation**
   - Navigation to each waypoint uses a **go-to-point controller**:  
     - Large heading error → rotate in place until aligned.  
     - Moderate error → proportional angular correction with reduced forward motion.  
-    - Small error → move straight at nominal speed.  
+    - Small error → move straight at nominal speed.
+    
+    See details: [go_to_point controller](go_to_point.md)
   - Each waypoint is marked **completed** once reached within tolerance.  
   - If stuck too long, the waypoint is skipped, and the robot proceeds with the next.  
 
