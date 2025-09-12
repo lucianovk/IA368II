@@ -1,6 +1,7 @@
 # Goal-Based Navigation + Reactive Obstacle Avoidance (with Temporary Avoidance Goals)
 
 Scene file: `myRobot.ttt`
+Python script: [controller-child-myRobot.py](controller-child-myRobot.py)
 
 Watch on YouTube:
 

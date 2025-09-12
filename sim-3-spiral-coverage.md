@@ -1,6 +1,7 @@
 # Vacuum Cleaner Robot — Spiral Coverage Mode
 
 Scene file: `lvk_navigation.ttt`
+Python script: [python_controller-child-lvk_navigation.py](python_controller-child-lvk_navigation.py)
 
 Watch on YouTube:
 

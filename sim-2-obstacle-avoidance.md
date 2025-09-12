@@ -1,6 +1,7 @@
 # Vacuum Cleaner Robot — Obstacle Avoidance Mode
 
 Scene file: `lvk_obstacle_avoidance.ttt`
+Python script: [python_controller-child-lvk_obstacle_avoidance.py](python_controller-child-lvk_obstacle_avoidance.py)
 
 Watch on YouTube:
 
