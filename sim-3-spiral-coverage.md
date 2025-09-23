@@ -5,7 +5,11 @@ Python script: [python_controller-child-lvk_navigation.py](python_controller-chi
 
 Watch on YouTube:
 
-[![Watch on YouTube](https://img.youtube.com/vi/jaj2KY_krco/hqdefault.jpg)](https://youtu.be/jaj2KY_krco)
+<p align="center">
+  <a href="https://youtu.be/jaj2KY_krco">
+    <img src="https://img.youtube.com/vi/jaj2KY_krco/hqdefault.jpg" alt="Watch on YouTube" width="360">
+  </a>
+</p>
 
 ## Algorithmic Behavior
 This script models a more systematic vacuum cleaner with **coverage navigation** using **spiral waypoints**:
