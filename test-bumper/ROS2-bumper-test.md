@@ -4,6 +4,8 @@ This guide shows how to run the bumper recovery example that integrates ROS 2 wi
 
 ![Bumper Test Setup](test-bumper.png)
 
+[▶ Watch the bumper test](https://youtu.be/xgwVoYoOphQ)
+
 ## Prerequisites
 
 - CoppeliaSim with the Remote API server enabled
