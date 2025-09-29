@@ -9,4 +9,6 @@ All scripts support **manual or autonomous navigation** patterns commonly found 
 2. **Pure reactive obstacle avoidance** (randomized turns) — [Read more](sim-2-obstacle-avoidance.md)
 3. **Systematic area coverage using spiral waypoints** — [Read more](sim-3-spiral-coverage.md)
 4. **ROS 2 Bumper Test** — [Read more](test-bumper/ROS2-bumper-test.md)
+5. **Autodocking** — [Read more](autodocking/autodocking.md)
+
 
