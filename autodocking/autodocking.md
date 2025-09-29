@@ -1,6 +1,8 @@
-# Autodocking
+# Autonomous Docking
 
 This walkthrough shows how to run the autonomous docking routine that combines the on-robot controller [`python_controller.py`](python_controller.py) with the docking helper script [`python_autodock.py`](python_autodock.py). The setup mirrors the ROS 2 bumper test but focuses on returning the robot to the charging base using the beacon sensor mounted on `/dockingSensor`.
+
+[▶ Watch the autonomous docking](https://youtu.be/IeCzR4ks9Uo)
 
 ## Prerequisites
 
