@@ -10,5 +10,6 @@ All scripts support **manual or autonomous navigation** patterns commonly found 
 3. **Systematic area coverage using spiral waypoints** — [Read more](sim-3-spiral-coverage.md)
 4. **ROS 2 Bumper Test** — [Read more](test-bumper/ROS2-bumper-test.md)
 5. **Autonomous Docking** — [Read more](autodocking/autodocking.md)
+6. **ROS2 Autonomous Docking** — [Read more](ros2-autodocking/ros2-autodocking.md)
 
 
