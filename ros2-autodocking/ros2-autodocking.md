@@ -5,7 +5,7 @@ battery depletes, then guides it back to a charging dock using a simulated beaco
 The node is written in Python with `rclpy` and is intended to run together with the
 CoppeliaSim scenes under `autodocking/` in this repository.
 
-[▶ Watch the ROS2 autonomous docking](https://youtu.be/v7VR-wGiVs4)
+[▶ Watch the ROS2 autonomous docking](https://youtu.be/dGNVUw3SbPc)
 
 ## Features
 
@@ -28,6 +28,10 @@ CoppeliaSim scenes under `autodocking/` in this repository.
 > The node assumes the topics follow the same naming scheme as the provided
 > CoppeliaSim scenes. Adjust the strings if your robot uses different namespace
 > prefixes.
+
+The CoppeliaSim scene ships with a non-threaded child script,
+[python_controller.py](python_controller.py), that exposes UI sliders and keyboard teleoperation.
+It also integrates with the remote override described below so ROS 2 can seize control of the wheels.
 
 ## Running the Node
 
@@ -80,6 +84,16 @@ behaviour:
 - `bump_threshold`, `control_timeout`, `signal_timeout` for sensing hysteresis
 
 Edit the script or expose ROS parameters if you need to adjust these at runtime.
+
+## Remote Override Integration
+
+When the ROS 2 node publishes wheel commands through the Remote API, the companion
+[python_controller.py](python_controller.py) caches the most recent pair of wheel speeds in
+`<robotHandle>leftVel` and `<robotHandle>rightVel` signals. Each new update re-arms a *remote override*
+flag inside the child script: while the flag stays set, the cached values supersede whatever the UI sliders
+were applying, so the robot keeps following ROS 2 commands even if no fresh signals arrive every cycle.
+Any interaction with the on-screen controls (button press or slider move) clears the flag and restores UI control.
+This hand-off lets you blend scripted ROS behaviour with manual interventions without racing to keep the topic alive.
 
 ## Testing Tips
 
