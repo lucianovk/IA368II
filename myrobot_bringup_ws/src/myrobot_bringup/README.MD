@@ -184,3 +184,9 @@ hardware.
 Keep the topic/service names and the `Mode` enum consistent so every node stays
 loosely coupled while reacting to the shared operational state published by the
 behaviour server.
+
+## References
+
+- ROS 2 Lifecycle design article: https://design.ros2.org/articles/node_lifecycle.html
+- ROS 2 lifecycle demos (Jazzy): https://github.com/ros2/demos/blob/jazzy/lifecycle/README.rst
+- Nav2 lifecycle manager package: https://github.com/ros-navigation/navigation2/tree/main/nav2_lifecycle_manager
