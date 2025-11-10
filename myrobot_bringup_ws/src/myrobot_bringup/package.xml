@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>myrobot_bringup</name>
+  <version>0.0.1</version>
+  <description>Dual-state lifecycle example for a vacuum robot (didactic)</description>
+  <maintainer email="you@example.com">You</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>lifecycle_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>myrobot_interfaces</exec_depend>
+  <exec_depend>nav2_lifecycle_manager</exec_depend>
+
+  <export>
+    <!-- IMPORTANT: ensure colcon treats this as a Python package -->
+    <build_type>ament_python</build_type>
+  </export>
+</package>

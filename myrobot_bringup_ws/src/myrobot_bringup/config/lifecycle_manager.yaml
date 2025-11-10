@@ -1,0 +1,11 @@
+lifecycle_manager:
+  ros__parameters:
+    autostart: true
+    bond_timeout: 0.0
+    node_names:
+      - myrobot
+      - behaviour_server
+      - cleaning_server
+      - autodocking_server
+      - charging_server
+      - charged_server

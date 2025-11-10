@@ -1,0 +1,6 @@
+# Request: "start" or "stop" (lowercase)
+string command
+---
+# Response: whether the command was accepted and a human-readable message
+bool accepted
+string message
