@@ -136,6 +136,40 @@ Because `myrobot_server` simulates the docking signal and battery level, you can
 observe the entire cycle (clean → dock → charge → charged) without extra
 hardware.
 
+## CLI Operations
+
+**Essential commands**
+
+- Check whether the stack is active (optional):
+
+  ```bash
+  ros2 service call /lifecycle_manager/is_active std_srvs/srv/Trigger "{}"
+  ```
+
+  If `success: true`, the Lifecycle Manager considers the system “active”. (`/lifecycle_manager/is_active` is a `std_srvs/Trigger`; see the Nav2 API docs for details.)
+
+- Shut down the entire stack gracefully:
+
+  ```bash
+  # SHUTDOWN = 4 on Jazzy
+  ros2 service call /lifecycle_manager/manage_nodes nav2_msgs/srv/ManageLifecycleNodes "{command: 4}"
+  ```
+
+- Alternative sequences (when needed):
+
+  - Pause / resume without shutting down:
+
+    ```bash
+    ros2 service call /lifecycle_manager/manage_nodes nav2_msgs/srv/ManageLifecycleNodes "{command: 1}"  # PAUSE
+    ros2 service call /lifecycle_manager/manage_nodes nav2_msgs/srv/ManageLifecycleNodes "{command: 2}"  # RESUME
+    ```
+
+  - Reset (deactivate, clean up, reconfigure/reactivate):
+
+    ```bash
+    ros2 service call /lifecycle_manager/manage_nodes nav2_msgs/srv/ManageLifecycleNodes "{command: 3}"
+    ```
+
 ## Customizing for Real Robots
 
 - Replace the synthetic battery model in `myrobot_server` with your real power

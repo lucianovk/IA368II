@@ -26,10 +26,14 @@ Where to add real logic
 - Apply command velocity bounds/motion interface to your base.
 """
 import math, random
+import threading
+import time
+
 import rclpy
 from rclpy.lifecycle import Node as LifecycleNode
 from rclpy.lifecycle import State, TransitionCallbackReturn
 from rclpy.qos import QoSProfile
+from rclpy.executors import SingleThreadedExecutor
 from std_msgs.msg import Float32, String
 from sensor_msgs.msg import BatteryState
 from geometry_msgs.msg import Twist
@@ -43,6 +47,14 @@ class MyRobot(LifecycleNode):
         self._last_cmd = Twist()
         self._mode = Mode.IDLE
         self._timer = None
+        self.pub_strength = None
+        self.pub_angle = None
+        self.pub_batt = None
+        self.sub_cmd = None
+        self.sub_mode = None
+        self._shutdown_event = threading.Event()
+        self._shutdown_deadline = None
+        self._shutdown_grace = 2.0
 
     # ---------------- Lifecycle Callbacks ----------------
     def on_configure(self, state: State):
@@ -59,8 +71,55 @@ class MyRobot(LifecycleNode):
         return TransitionCallbackReturn.SUCCESS
 
     def on_activate(self, state: State):
+        if self._timer is not None and self._timer.is_canceled():
+            self._timer.reset()
         self.get_logger().info('myrobot activated')
         return TransitionCallbackReturn.SUCCESS
+
+    def _cancel_timer(self):
+        if self._timer is not None and not self._timer.is_canceled():
+            self._timer.cancel()
+
+    def _destroy_resources(self):
+        if self._timer is not None:
+            self.destroy_timer(self._timer)
+            self._timer = None
+        for attr in ('pub_strength', 'pub_angle', 'pub_batt'):
+            pub = getattr(self, attr)
+            if pub is not None:
+                self.destroy_publisher(pub)
+                setattr(self, attr, None)
+        for attr in ('sub_cmd', 'sub_mode'):
+            sub = getattr(self, attr)
+            if sub is not None:
+                self.destroy_subscription(sub)
+                setattr(self, attr, None)
+
+    def on_deactivate(self, state: State):
+        self.get_logger().info('myrobot deactivating: cancelling timers')
+        self._cancel_timer()
+        return TransitionCallbackReturn.SUCCESS
+
+    def on_cleanup(self, state: State):
+        self.get_logger().info('myrobot cleaning up resources')
+        self._cancel_timer()
+        self._destroy_resources()
+        return TransitionCallbackReturn.SUCCESS
+
+    def on_shutdown(self, state: State):
+        self.get_logger().info('myrobot shutting down')
+        self._cancel_timer()
+        self._destroy_resources()
+        self._shutdown_event.set()
+        self._shutdown_deadline = time.monotonic() + self._shutdown_grace
+        return TransitionCallbackReturn.SUCCESS
+
+    def should_exit(self):
+        if not self._shutdown_event.is_set():
+            return False
+        if self._shutdown_deadline is None:
+            return False
+        return time.monotonic() >= self._shutdown_deadline
 
     # ---------------- Operational Logic ----------------
     def _on_mode(self, msg: String):
@@ -108,8 +167,19 @@ class MyRobot(LifecycleNode):
 def main():
     rclpy.init()
     node = MyRobot()
-    rclpy.spin(node)
-    rclpy.shutdown()
+    executor = SingleThreadedExecutor()
+    executor.add_node(node)
+    try:
+        while rclpy.ok():
+            executor.spin_once(timeout_sec=0.1)
+            if node.should_exit():
+                break
+    except KeyboardInterrupt:
+        node.get_logger().info('Keyboard interrupt received, shutting down early')
+    finally:
+        executor.shutdown()
+        node.destroy_node()
+        rclpy.shutdown()
 
 if __name__ == '__main__':
     main()
