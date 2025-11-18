@@ -1,4 +1,4 @@
 # Ignore generated ROS workspace artifacts
-final_project_ws/build/
-final_project_ws/install/
-final_project_ws/log/
+**/build/
+**/install/
+**/log/
