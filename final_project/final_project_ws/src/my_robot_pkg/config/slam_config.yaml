@@ -1,7 +1,7 @@
 slam_toolbox:
   ros__parameters:
     use_sim_time: false
-    log_level: warn
+    log_level: info
     # Plugin params
     solver_plugin: solver_plugins::CeresSolver
     ceres_linear_solver: SPARSE_NORMAL_CHOLESKY
@@ -78,5 +78,5 @@ slam_toolbox:
 
     rolling_window:
       enabled: false
-      size_x: 50.0
-      size_y: 50.0
+      #size_x: 20.0
+      #size_y: 20.0

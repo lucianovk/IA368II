@@ -130,7 +130,7 @@ Visualization Manager:
     - Alpha: 1
       Class: rviz_default_plugins/RobotModel
       Collision Enabled: false
-      Description File: /dados/pessoal/sandbox/IA368II/final_project/my_robot.urdf
+      Description File: package://my_robot_pkg/urdf/my_robot.urdf
       Description Source: File
       Description Topic:
         Depth: 5

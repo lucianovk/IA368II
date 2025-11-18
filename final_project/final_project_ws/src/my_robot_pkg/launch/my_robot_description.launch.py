@@ -8,7 +8,14 @@ from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description():
-    default_urdf = LaunchConfiguration('urdf', default='/dados/pessoal/sandbox/IA368II/final_project/my_robot.urdf')
+    urdf_file = LaunchConfiguration('urdf')
+    default_urdf = PathJoinSubstitution(
+        [
+            FindPackageShare('my_robot_pkg'),
+            'urdf',
+            'my_robot.urdf',
+        ]
+    )
     default_rviz = PathJoinSubstitution(
         [
             FindPackageShare('my_robot_pkg'),
@@ -21,7 +28,7 @@ def generate_launch_description():
         [
             DeclareLaunchArgument(
                 'urdf',
-                default_value='/dados/pessoal/sandbox/IA368II/final_project/my_robot.urdf',
+                default_value=default_urdf,
                 description='Path to the URDF file.',
             ),
             DeclareLaunchArgument(
@@ -36,7 +43,7 @@ def generate_launch_description():
                 parameters=[
                     {
                         'robot_description': ParameterValue(
-                            Command(['cat ', default_urdf]),
+                            Command(['cat ', urdf_file]),
                             value_type=str,
                         ),
                     }
