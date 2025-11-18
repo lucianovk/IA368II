@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>my_robot_pkg</name>
+  <version>0.0.1</version>
+  <description>Nodes to interface the custom robot with ROS 2, including the simulated laser bridge.</description>
+
+  <maintainer email="adrolab.unicamp@gmail.com">adrolab</maintainer>
+  <license>Apache License 2.0</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>std_srvs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>coppeliasim_zmqremoteapi_client</exec_depend>
+  <exec_depend>rf2o_laser_odometry</exec_depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

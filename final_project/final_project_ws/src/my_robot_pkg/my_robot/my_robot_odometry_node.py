@@ -1,0 +1,98 @@
+#!/usr/bin/env python3
+import math
+from typing import Optional, Tuple
+
+import rclpy
+from geometry_msgs.msg import Quaternion
+from nav_msgs.msg import Odometry
+from rclpy.node import Node
+from rclpy.time import Time
+
+from coppeliasim_zmqremoteapi_client import RemoteAPIClient
+
+
+def yaw_to_quaternion(yaw: float) -> Quaternion:
+    q = Quaternion()
+    q.z = math.sin(yaw * 0.5)
+    q.w = math.cos(yaw * 0.5)
+    return q
+
+
+class CoppeliaOdometryPublisher(Node):
+    def __init__(self):
+        super().__init__('my_robot_odometry_node')
+
+        self.pub = self.create_publisher(Odometry, '/myRobot/odometry', 10)
+
+        self.client = RemoteAPIClient()
+        self.sim = self.client.require('sim')
+
+        self.robot_handle = self.sim.getObject('/myRobot')
+
+        self.last_pose: Optional[Tuple[float, float, float]] = None
+        self.last_stamp: Optional[Time] = None
+
+        self.timer = self.create_timer(0.05, self.timer_callback)
+
+        self.get_logger().info('CoppeliaOdometryPublisher conectado ao CoppeliaSim.')
+
+    def timer_callback(self):
+        buf = self.sim.getBufferProperty(
+            self.robot_handle,
+            'customData.Odometry',
+            {'noError': True},
+        )
+        if not buf:
+            return
+
+        data = self.sim.unpackTable(buf)
+        if len(data) < 3:
+            return
+
+        x, y, theta = data[0], data[1], data[2]
+
+        now = self.get_clock().now()
+
+        msg = Odometry()
+        msg.header.stamp = now.to_msg()
+        msg.header.frame_id = 'odom'
+        msg.child_frame_id = 'footprint_link'
+
+        msg.pose.pose.position.x = x
+        msg.pose.pose.position.y = y
+        msg.pose.pose.position.z = 0.0
+        msg.pose.pose.orientation = yaw_to_quaternion(theta)
+
+        if self.last_pose and self.last_stamp:
+            dt = (now - self.last_stamp).nanoseconds * 1e-9
+            if dt > 0.0:
+                dx = x - self.last_pose[0]
+                dy = y - self.last_pose[1]
+                dtheta = theta - self.last_pose[2]
+                dtheta = math.atan2(math.sin(dtheta), math.cos(dtheta))
+
+                msg.twist.twist.linear.x = dx / dt
+                msg.twist.twist.linear.y = dy / dt
+                msg.twist.twist.angular.z = dtheta / dt
+
+        self.last_pose = (x, y, theta)
+        self.last_stamp = now
+
+        self.pub.publish(msg)
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = CoppeliaOdometryPublisher()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()
