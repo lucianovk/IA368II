@@ -19,6 +19,7 @@ setup(
     install_requires=[
         'setuptools',
         'coppeliasim-zmqremoteapi-client',
+        'numpy',
     ],
     zip_safe=True,
     maintainer='adrolab',
@@ -33,6 +34,7 @@ setup(
             'my_robot_sim_control_node = my_robot.my_robot_sim_control_node:main',
             'my_robot_cmd_vel_node = my_robot.my_robot_cmd_vel_node:main',
             'my_robot_keyboard_node = my_robot.my_robot_keyboard_node:main',
+            'my_robot_explore_node = my_robot.explore_frontier_node:main',
         ],
     },
 )

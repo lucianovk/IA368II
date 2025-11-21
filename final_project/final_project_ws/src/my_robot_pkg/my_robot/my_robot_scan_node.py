@@ -2,7 +2,9 @@
 import math
 
 import rclpy
+from rclpy.exceptions import ParameterAlreadyDeclaredException
 from rclpy.node import Node
+from rosgraph_msgs.msg import Clock
 from sensor_msgs.msg import LaserScan
 
 from coppeliasim_zmqremoteapi_client import RemoteAPIClient
@@ -11,6 +13,12 @@ from coppeliasim_zmqremoteapi_client import RemoteAPIClient
 class CoppeliaLaserPublisher(Node):
     def __init__(self):
         super().__init__('coppelia_laser_publisher')
+
+        # use_sim_time parameter is set via launch; declare it so /clock is honored.
+        try:
+            self.declare_parameter('use_sim_time', False)
+        except ParameterAlreadyDeclaredException:
+            pass
 
         # Publicador LaserScan
         self.pub = self.create_publisher(LaserScan, '/scan', 10)
@@ -47,8 +55,10 @@ class CoppeliaLaserPublisher(Node):
         if n < 2:
             return
 
+        now = self.get_clock().now()
+
         msg = LaserScan()
-        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.stamp = now.to_msg()
         msg.header.frame_id = 'laser_link'
 
         msg.angle_min = self.angle_min
@@ -63,6 +73,7 @@ class CoppeliaLaserPublisher(Node):
         msg.ranges = ranges
 
         self.pub.publish(msg)
+
 
 
 def main(args=None):
