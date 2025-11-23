@@ -1,12 +1,9 @@
 # Semantic Room Segmentation for Autonomous Vacuum Robots
 
 Final project for **IA368II_2025S2 – Design and Development of Intelligent Autonomous Robots**  
-**Student:** Luciano Vieira Koenigkan
-
-![YOLO detections overlaid on RGB frame](screenshots/yolo_result.jpg)
 
 ## 1. Goal and Motivation
-The project aims to classify household rooms by combining geometric room segmentation with semantic cues extracted from a top-mounted RGB camera. A YOLO11-based detector identifies objects in real time; detections are then matched against a list of typical household objects to estimate which room the robot is visiting. This knowledge can drive cleaning policies, contextual navigation, or task scheduling.
+The project aims to classify household rooms by combining geometric room segmentation with semantic cues extracted from a top-mounted RGB-D camera. A YOLO11-based detector identifies objects in real time; detections are then matched against a list of typical household objects to estimate which room the robot is visiting. This knowledge can drive cleaning policies, contextual navigation, or task scheduling.
 
 Key ideas:
 - Build an occupancy map with SLAM (LiDAR or RGB-D) and split it into rooms.
@@ -15,7 +12,6 @@ Key ideas:
 - Publish a semantic map (`/semantic_map`) and text markers for visualization in RViz.
 
 ## 2. System Architecture
-![Topologic segmentation](screenshots/topologic_room_segmentation.png)
 
 | Block | Description |
 | --- | --- |
@@ -33,16 +29,23 @@ Additional tools:
 ## 3. Semantic Pipeline
 
 1. **Occupancy & Room Segmentation**  
-   The SLAM stack generates a 2D occupancy grid. Room segmentation (based on IPA room segmentation and coverage-planning techniques) clusters the map into room IDs.  
-   ![Semantic room label coloring](screenshots/semantic_room_segmentation.png)
 
+   ![Topologic segmentation](screenshots/topologic_room_segmentation.png)
+
+   The SLAM stack generates a 2D occupancy grid. Room segmentation (based on IPA room segmentation and coverage-planning techniques) clusters the map into room IDs.  
+   
+   
 2. **Object Detection**  
+
+   ![Bathroom example](screenshots/toilet.jpg)
+   
    YOLO11 is trained/fine-tuned with everyday household objects (InteriorGS dataset, annotated scenes, and domain randomization). Debug overlays can be inspected in RViz.  
-   ![YOLO debug overlay](screenshots/yolo_debug.jpg)
 
 3. **Semantic Assignment**  
+
+   ![Semantic room label coloring](screenshots/semantic_room_segmentation.png)
+
    Detected objects are mapped to canonical room labels through a lookup table stored in `config/semantic_room_seg_classes.json`. For example, finding *stove*, *pan* → `kitchen`; *mirror*, *toilet* → `bathroom`.  
-   ![Bathroom example](screenshots/toilet.jpg)
 
 4. **Publication**  
    The semantic occupancy grid is published on `/semantic_map` (OccupancyGrid). White text markers show the room class in RViz.
@@ -67,18 +70,17 @@ Important paths:
 
 ## 5. Software Stack & Dependencies
 
-- **ROS 2 Humble (recommended)** with nav/visualization packages.
-- `slam_toolbox`, `cartographer_ros`, `rf2o_laser_odometry`.
-- `rclpy`, `nav_msgs`, `visualization_msgs`.
-- `numpy`, `scipy`, `torch`, `ultralytics` (for YOLO11).
+- **ROS 2 Jazzy (recommended)** with nav/visualization packages.
+- `slam_toolbox`, `rf2o_laser_odometry`.
+- `scipy`, `ultralytics` (for YOLO11).
 - GPU (optional) for faster inference; CPU mode works for smaller models.
 
 Install base dependencies:
 ```bash
 sudo apt update
-sudo apt install python3-colcon-common-extensions ros-humble-navigation2 ros-humble-slam-toolbox \
-                 ros-humble-cartographer-ros ros-humble-tf-transformations \
-                 ros-humble-rviz2 ros-humble-ros2launch
+sudo apt install python3-colcon-common-extensions ros-jazzy-navigation2 ros-jazzy-slam-toolbox \
+                 ros-jazzy-cartographer-ros ros-jazzy-tf-transformations \
+                 ros-jazzy-rviz2 ros-jazzy-ros2launch
 pip install -r final_project_ws/src/my_robot_pkg/requirements.txt  # if provided
 ```
 
@@ -125,27 +127,7 @@ Topics of interest: `/map`, `/topologic_map`, `/semantic_map`, `/detections_mark
 - **Object Detection:** YOLO11 fine-tuned with *InteriorGS* and in-house captures to reduce domain gap. Pretrained weights should be placed under `detections/` (see package README). You may swap models by editing `config/yolo_config.yaml`.
 - **Room Class Templates:** `semantic_room_seg_classes.json` encodes label→room mappings. Extend the JSON to support new rooms or languages.
 
-## 9. Evaluation
-
-| Metric | Value | Notes |
-| --- | --- | --- |
-| Semantic accuracy | ~86% | Percentage of rooms correctly labeled in a 6-room apartment dataset. |
-| Detection latency | 70–90 ms | YOLO11-S on RTX 3060, batch size 1. |
-| Exploration coverage | 93% | Ratio of mapped free cells when exploration halts due to no frontier. |
-
-Failure cases mostly arise when:
-- Objects typical of multiple rooms (e.g., *chair*) appear in transitional spaces.
-- SLAM drift misaligns the topologic map, causing wrong room IDs.
-- Lighting changes degrade YOLO confidence; enabling RGB-D depth cues mitigates this.
-
-## 10. Extending the Project
-
-1. **Multi-modal fusion:** Incorporate audio or text prompts for user queries (“Go to the kitchen”).
-2. **Dynamic object reasoning:** Track temporal sequences so the system ignores transient detections.
-3. **Policy learning:** Use the semantic map to schedule cleaning routines (e.g., kitchen after dinner hours).
-4. **Cloud offloading:** Stream detections to a cloud service (e.g., ROS bridge + HuggingFace Inference) for heavier models.
-
-## 11. References
+## 9. References
 
 1. Ye, Y. et al., “InteriorVerse: Multimodal Indoor Scene Understanding,” arXiv:2403.12920.  
 2. SpatialVerse – InteriorGS dataset, Hugging Face.  
@@ -153,9 +135,3 @@ Failure cases mostly arise when:
 4. ROS Wiki – [ipa_room_segmentation](https://wiki.ros.org/ipa_room_segmentation).  
 5. ROS Wiki – [rose2](https://wiki.ros.org/rose2).  
 6. IPA 320 – [ipa_coverage_planning](https://github.com/ipa320/ipa_coverage_planning).
-
-## 12. Author
-
-Luciano Vieira Koenigkan  
-Email/contact: *(add preferred contact method here)*  
-This repository is the final submission for **IA368II_2025S2 – Design and Development of Intelligent Autonomous Robots**.
