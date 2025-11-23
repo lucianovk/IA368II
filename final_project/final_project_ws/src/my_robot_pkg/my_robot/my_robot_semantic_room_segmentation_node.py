@@ -20,7 +20,7 @@ from visualization_msgs.msg import Marker, MarkerArray
 
 class SemanticRoomSegmentationNode(Node):
     def __init__(self) -> None:
-        super().__init__('my_robot_semantic_room_segmentation')
+        super().__init__('my_robot_semantic_room_segmentation_node')
 
         self.declare_parameter(
             'semantic_map_file',
