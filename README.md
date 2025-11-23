@@ -11,5 +11,6 @@ All scripts support **manual or autonomous navigation** patterns commonly found 
 4. **ROS 2 Bumper Test** — [Read more](test-bumper/ROS2-bumper-test.md)
 5. **Autonomous Docking** — [Read more](autodocking/autodocking.md)
 6. **ROS2 Autonomous Docking** — [Read more](ros2-autodocking/ros2-autodocking.md)
-
+7. **ROS 2 Bringup Example** — [Read more](myrobot_bringup_ws/src/myrobot_bringup/my-robot-brungup.md)
+8. **Semantic Room Segmentation Final Project** — [Read more](final_project/final-project.md)
 
