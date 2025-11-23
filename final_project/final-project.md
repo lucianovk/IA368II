@@ -121,13 +121,7 @@ rviz2 -d my_robot.rviz
 ```
 Topics of interest: `/map`, `/topologic_map`, `/semantic_map`, `/detections_markers`, `/semantic_map_labels_markers`.
 
-## 8. Data & Training Notes
-
-- **SLAM Data:** Logs captured with a mobile vacuum robot equipped with a planar LiDAR and an RGB camera. Additional data stems from CoppeliaSim simulations (`scenes/`).
-- **Object Detection:** YOLO11 fine-tuned with *InteriorGS* and in-house captures to reduce domain gap. Pretrained weights should be placed under `detections/` (see package README). You may swap models by editing `config/yolo_config.yaml`.
-- **Room Class Templates:** `semantic_room_seg_classes.json` encodes label→room mappings. Extend the JSON to support new rooms or languages.
-
-## 9. References
+## 8. References
 
 1. Ye, Y. et al., “InteriorVerse: Multimodal Indoor Scene Understanding,” arXiv:2403.12920.  
 2. SpatialVerse – InteriorGS dataset, Hugging Face.  
