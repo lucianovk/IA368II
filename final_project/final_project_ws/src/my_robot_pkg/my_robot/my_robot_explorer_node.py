@@ -13,6 +13,7 @@ from scipy.ndimage import distance_transform_edt, binary_dilation
 # --- Configurações do Robô ---
 ROBOT_RADIUS = 0.16
 INFLATION_RADIUS = 0.25 
+COVERAGE_RADIUS = 0.30  # Raio que o robô "pinta" como visitado ao passar
 
 # Velocidades
 MAX_LINEAR_SPEED = 0.5 
@@ -22,7 +23,7 @@ MAX_ANGULAR_ACCEL = 0.5
 KP_ANGULAR = 1.8        
 
 # --- Configurações de Navegação ---
-ALIGNMENT_THRESHOLD = 0.20  # (rad) ~11 graus. Se o erro for maior que isso, GIRA PARADO.
+ALIGNMENT_THRESHOLD = 0.20  # (rad) ~11 graus.
 
 # --- Configurações de Sensores e Histerese ---
 SCAN_FOV_DEG = 60          
@@ -49,9 +50,9 @@ class AStarNode:
     def __lt__(self, other):
         return self.f < other.f
 
-class MyRobotExplorer(Node):
+class MyRobotCoverage(Node):
     def __init__(self):
-        super().__init__('my_robot_explorer_node')
+        super().__init__('my_robot_coverage_node')
 
         # QoS
         qos_sensor = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT, history=HistoryPolicy.KEEP_LAST, depth=1)
@@ -67,11 +68,17 @@ class MyRobotExplorer(Node):
         self.pub_planned_path = self.create_publisher(Path, '/planned_path', 10)
         self.pub_followed_path = self.create_publisher(Path, '/followed_path', 10)
         self.pub_inflated = self.create_publisher(OccupancyGrid, '/inflated_obstacle', qos_map)
-        self.pub_covered = self.create_publisher(OccupancyGrid, '/covered_map', qos_map)
+        
+        # NOVO PUBLISHER: Mapa de Visitados
+        self.pub_visited = self.create_publisher(OccupancyGrid, '/visited_map', qos_map)
 
         # Estado Interno
         self.map_data = None
         self.inflated_map_data = None
+        
+        # NOVO: Grid de Visitados
+        self.visited_grid = None 
+        
         self.cost_map = None
         self.map_info = None
         self.robot_pose = None 
@@ -96,7 +103,7 @@ class MyRobotExplorer(Node):
         self.dt = 0.05 
 
         self.timer = self.create_timer(self.dt, self.control_loop)
-        self.get_logger().info("Explorer Node (Rotate-Then-Move Strict) Iniciado")
+        self.get_logger().info("Coverage Node (Fill the Map) Iniciado")
 
     def euler_from_quaternion(self, q):
         siny_cosp = 2 * (q.w * q.z + q.x * q.y)
@@ -108,6 +115,9 @@ class MyRobotExplorer(Node):
         q = msg.pose.pose.orientation
         yaw = self.euler_from_quaternion(q)
         self.robot_pose = (p.x, p.y, yaw)
+
+        # Atualiza o mapa de visitados com a posição atual
+        self.update_visited_map()
 
         pose_stamped = PoseStamped()
         pose_stamped.header = msg.header
@@ -128,8 +138,16 @@ class MyRobotExplorer(Node):
         height = msg.info.height
         resolution = msg.info.resolution
         
+        # 0 = livre, 100 = ocupado, -1 = desconhecido
         grid = np.array(msg.data, dtype=np.int8).reshape((height, width))
         
+        # Inicializa ou redimensiona o mapa de visitados se necessário
+        # Se o mapa crescer (slam_toolbox faz isso), precisamos resetar ou expandir.
+        # Por simplicidade, se mudar o tamanho, resetamos o visited (ou cria novo).
+        if self.visited_grid is None or self.visited_grid.shape != grid.shape:
+            self.visited_grid = np.zeros_like(grid, dtype=np.int8)
+            self.get_logger().info(f"Mapa de Visitados inicializado: {width}x{height}")
+
         cells_radius = int(math.ceil(INFLATION_RADIUS / resolution))
         obstacles = (grid > 0)
         
@@ -152,12 +170,54 @@ class MyRobotExplorer(Node):
         inf_msg.info = msg.info
         inf_msg.data = self.inflated_map_data.flatten().tolist()
         self.pub_inflated.publish(inf_msg)
-        self.pub_covered.publish(msg)
         
         self.map_data = grid
         
         if self.state == "IDLE" and self.robot_pose is not None:
             self.state = "PLANNING"
+
+    def update_visited_map(self):
+        """ Marca a região atual do robô como visitada (valor 100) """
+        if self.map_info is None or self.visited_grid is None or self.robot_pose is None:
+            return
+
+        rx, ry, _ = self.robot_pose
+        grid_pos = self.world_to_grid(rx, ry)
+        if not grid_pos: return
+
+        r, c = grid_pos
+        res = self.map_info.resolution
+        radius_cells = int(math.ceil(COVERAGE_RADIUS / res))
+
+        # Cria uma máscara circular simples
+        rows, cols = self.visited_grid.shape
+        y, x = np.ogrid[-radius_cells:radius_cells+1, -radius_cells:radius_cells+1]
+        mask = x**2 + y**2 <= radius_cells**2
+
+        # Define os limites para o slice
+        r_start = max(0, r - radius_cells)
+        r_end = min(rows, r + radius_cells + 1)
+        c_start = max(0, c - radius_cells)
+        c_end = min(cols, c + radius_cells + 1)
+
+        # Ajusta a máscara se estivermos na borda do mapa
+        mask_h = r_end - r_start
+        mask_w = c_end - c_start
+        
+        # Pega a sub-seção da máscara correta
+        # (Lógica simplificada: itera sobre a caixa delimitadora)
+        for i in range(r_start, r_end):
+            for j in range(c_start, c_end):
+                if (i - r)**2 + (j - c)**2 <= radius_cells**2:
+                    self.visited_grid[i, j] = 100 # Marca como visitado
+
+        # Publica o mapa de visitados
+        visited_msg = OccupancyGrid()
+        visited_msg.header.frame_id = "map"
+        visited_msg.header.stamp = self.get_clock().now().to_msg()
+        visited_msg.info = self.map_info
+        visited_msg.data = self.visited_grid.flatten().tolist()
+        self.pub_visited.publish(visited_msg)
 
     def get_best_escape_angle(self, ranges, angle_min, angle_inc):
         clean_ranges = np.array(ranges)
@@ -182,13 +242,11 @@ class MyRobotExplorer(Node):
 
         if self.robot_pose is None: return
 
-        # 1. Análise 360
         all_ranges = np.array(msg.ranges)
         all_ranges[all_ranges == float('inf')] = 10.0
         all_ranges = np.nan_to_num(all_ranges, nan=10.0)
         self.min_360_dist = np.min(all_ranges)
 
-        # 2. Análise Frontal
         fov_rad = math.radians(SCAN_FOV_DEG / 2)
         min_idx = int(( -fov_rad - self.scan_angle_min ) / self.scan_angle_inc)
         max_idx = int(( fov_rad - self.scan_angle_min ) / self.scan_angle_inc)
@@ -202,7 +260,6 @@ class MyRobotExplorer(Node):
             if 0.01 < d < self.min_front_dist:
                 self.min_front_dist = d
         
-        # --- LÓGICA DE ESTADOS ---
         current_collision_threshold = COLLISION_DIST_NORMAL
         if self.is_rescuing:
             current_collision_threshold = COLLISION_DIST_RESCUE
@@ -215,9 +272,7 @@ class MyRobotExplorer(Node):
 
         elif self.state == "AVOIDING":
             self.avoid_angle = self.get_best_escape_angle(msg.ranges, msg.angle_min, msg.angle_increment)
-            
             is_front_clear = self.min_front_dist > SCAN_CLEAR_DIST
-            # Agora exigimos alinhamento PERFEITO para sair do modo AVOIDING
             is_aligned = abs(self.avoid_angle) < ALIGNMENT_THRESHOLD 
             
             safe_bubble_threshold = SCAN_SAFE_BUBBLE
@@ -245,25 +300,30 @@ class MyRobotExplorer(Node):
         wy = (r * self.map_info.resolution) + self.map_info.origin.position.y + (self.map_info.resolution/2)
         return (wx, wy)
 
-    def find_frontiers(self):
-        if self.inflated_map_data is None: return []
+    def find_unvisited_targets(self):
+        """
+        Substitui find_frontiers.
+        Procura células que são LIVRES no mapa (0) mas NÃO VISITADAS (0) no visited_grid.
+        Apenas retorna células que também são seguras (0 no inflated_map).
+        """
+        if self.inflated_map_data is None or self.visited_grid is None: return []
         
-        rows, cols = self.inflated_map_data.shape
-        free_mask = (self.inflated_map_data == 0)
-        unknown_mask = (self.inflated_map_data == -1)
+        # Critério: Livre no mapa fisico E Não visitado E Seguro (não inflado)
+        # map_data == 0 -> Livre conhecido
+        # visited_grid == 0 -> Ainda não passei por lá
+        # inflated_map_data == 0 -> Longe de paredes
+        candidates_mask = (self.map_data == 0) & (self.visited_grid == 0) & (self.inflated_map_data == 0)
         
-        unknown_dilated = binary_dilation(unknown_mask)
-        frontier_mask = free_mask & unknown_dilated
+        candidate_indices = np.argwhere(candidates_mask)
         
-        frontier_indices = np.argwhere(frontier_mask)
-        
-        if len(frontier_indices) == 0: return []
+        if len(candidate_indices) == 0: return []
 
         candidates = []
-        step = max(1, len(frontier_indices) // 30) 
+        # Downsampling agressivo para performance, já que teremos muitos pontos "não visitados"
+        step = max(1, len(candidate_indices) // 50) 
         
-        for i in range(0, len(frontier_indices), step):
-            r, c = frontier_indices[i]
+        for i in range(0, len(candidate_indices), step):
+            r, c = candidate_indices[i]
             wx, wy = self.grid_to_world(r, c)
             candidates.append((wx, wy))
             
@@ -313,13 +373,11 @@ class MyRobotExplorer(Node):
         
         rows, cols = grid_to_use.shape
         neighbors = [(0,1),(0,-1),(1,0),(-1,0),(1,1),(1,-1),(-1,1),(-1,-1)]
-        
         H_WEIGHT = 2.0
 
         while len(open_list) > 0:
             iter_count += 1
-            if iter_count > max_iterations:
-                return None
+            if iter_count > max_iterations: return None
 
             current_node = heapq.heappop(open_list)
             pos = current_node.position
@@ -342,11 +400,9 @@ class MyRobotExplorer(Node):
                 nr, nc = r + next_pos[0], c + next_pos[1]
                 
                 if 0 <= nr < rows and 0 <= nc < cols:
-                    if grid_to_use[nr, nc] > 0: 
-                        continue
+                    if grid_to_use[nr, nc] > 0: continue
                     
                     base_cost = math.hypot(next_pos[0], next_pos[1])
-                    
                     penalty = 0.0
                     if self.cost_map is not None:
                         penalty = self.cost_map[nr, nc]
@@ -360,17 +416,14 @@ class MyRobotExplorer(Node):
                     new_node.g = new_g
                     new_node.h = math.hypot(nr - end_grid[0], nc - end_grid[1]) * H_WEIGHT
                     new_node.f = new_node.g + new_node.h
-                    
                     heapq.heappush(open_list, new_node)
                     
         return None
 
     def simplify_path(self, grid_path):
         if not grid_path or len(grid_path) < 3: return grid_path
-        
         simplified = [grid_path[0]]
         current_idx = 0
-        
         while current_idx < len(grid_path) - 1:
             check_idx = len(grid_path) - 1
             found = False
@@ -381,11 +434,9 @@ class MyRobotExplorer(Node):
                     found = True
                     break
                 check_idx -= 1
-            
             if not found:
                 current_idx += 1
                 simplified.append(grid_path[current_idx])
-                
         return simplified
 
     def is_line_free(self, p1, p2):
@@ -393,25 +444,23 @@ class MyRobotExplorer(Node):
         r1, c1 = p2
         length = int(math.hypot(r1-r0, c1-c0))
         if length == 0: return True
-        
         for i in range(length + 1):
             r = int(r0 + (r1 - r0) * i / length)
             c = int(c0 + (c1 - c0) * i / length)
             if 0 <= r < self.inflated_map_data.shape[0] and 0 <= c < self.inflated_map_data.shape[1]:
-                if self.inflated_map_data[r, c] > 0: 
-                    return False
+                if self.inflated_map_data[r, c] > 0: return False
         return True
 
     def get_farthest_reachable(self):
         if self.inflated_map_data is None: return None
-        
+        # Procura qualquer célula livre e segura (ignora se foi visitada ou não)
+        # Utilizado como fallback se não achar alvos de cobertura
         free_indices = np.argwhere(self.inflated_map_data == 0)
         if len(free_indices) == 0: return None
         
         step = max(1, len(free_indices) // 100)
         max_dist = -1.0
         best_pt = None
-        
         curr_grid = self.world_to_grid(self.robot_pose[0], self.robot_pose[1])
         
         for i in range(0, len(free_indices), step):
@@ -420,15 +469,13 @@ class MyRobotExplorer(Node):
             if dist > max_dist:
                 max_dist = dist
                 best_pt = self.grid_to_world(pt[0], pt[1])
-                
         return best_pt
 
     def plan_route(self):
-        if self.inflated_map_data is None or self.robot_pose is None:
+        if self.inflated_map_data is None or self.robot_pose is None or self.visited_grid is None:
             return
 
         start_grid = self.world_to_grid(self.robot_pose[0], self.robot_pose[1])
-        
         in_inflation = (self.inflated_map_data[start_grid[0], start_grid[1]] > 0)
         
         path_found = None
@@ -440,14 +487,14 @@ class MyRobotExplorer(Node):
             
             if safe_grid:
                 escape_path = self.a_star(start_grid, safe_grid, ignore_inflation=True)
-                
                 if escape_path:
                     self.is_rescuing = True 
-                    frontiers = self.find_frontiers()
+                    # Tenta ir para qualquer área não visitada após escapar
+                    targets = self.find_unvisited_targets()
                     safe_world = self.grid_to_world(safe_grid[0], safe_grid[1])
-                    frontiers.sort(key=lambda p: math.hypot(p[0]-safe_world[0], p[1]-safe_world[1]))
+                    targets.sort(key=lambda p: math.hypot(p[0]-safe_world[0], p[1]-safe_world[1]))
                     
-                    for target_world in frontiers:
+                    for target_world in targets:
                         target_grid = self.world_to_grid(target_world[0], target_world[1])
                         if target_grid and self.inflated_map_data[target_grid[0], target_grid[1]] == 0:
                             main_path = self.a_star(safe_grid, target_grid, ignore_inflation=False)
@@ -455,36 +502,34 @@ class MyRobotExplorer(Node):
                                 full_path = escape_path + main_path[1:]
                                 path_found = self.simplify_path(full_path)
                                 break
-            
-            if not path_found and safe_grid:
-                 target_world = self.get_farthest_reachable()
-                 if target_world:
-                    target_grid = self.world_to_grid(target_world[0], target_world[1])
-                    main_path = self.a_star(safe_grid, target_grid, ignore_inflation=False)
-                    if main_path:
-                        self.is_rescuing = True
-                        full_path = escape_path + main_path[1:]
-                        path_found = self.simplify_path(full_path)
-
         else:
-            frontiers = self.find_frontiers()
-            frontiers.sort(key=lambda p: math.hypot(p[0]-self.robot_pose[0], p[1]-self.robot_pose[1]))
+            # Estratégia de Cobertura: Busca o alvo NÃO VISITADO mais próximo
+            targets = self.find_unvisited_targets()
             
-            for target_world in frontiers:
-                target_grid = self.world_to_grid(target_world[0], target_world[1])
-                if target_grid and self.inflated_map_data[target_grid[0], target_grid[1]] == 0:
-                    raw_path = self.a_star(start_grid, target_grid, ignore_inflation=False)
-                    if raw_path:
-                        path_found = self.simplify_path(raw_path)
-                        break
+            if not targets:
+                self.get_logger().info("Nenhum alvo não visitado encontrado. Cobertura completa!")
+            else:
+                targets.sort(key=lambda p: math.hypot(p[0]-self.robot_pose[0], p[1]-self.robot_pose[1]))
+                
+                # Tenta os 5 mais próximos para evitar falhas de A*
+                for target_world in targets[:5]:
+                    target_grid = self.world_to_grid(target_world[0], target_world[1])
+                    if target_grid:
+                        raw_path = self.a_star(start_grid, target_grid, ignore_inflation=False)
+                        if raw_path:
+                            path_found = self.simplify_path(raw_path)
+                            break
         
-        if not path_found and not in_inflation:
-            target_world = self.get_farthest_reachable()
-            if target_world:
-                target_grid = self.world_to_grid(target_world[0], target_world[1])
-                raw_path = self.a_star(start_grid, target_grid, ignore_inflation=False)
-                if raw_path:
-                    path_found = self.simplify_path(raw_path)
+        # Fallback: Se não achou caminho ou acabou a cobertura, tenta mover para o ponto mais longe livre
+        # apenas para garantir que não estamos travados, ou finaliza.
+        if not path_found and not in_inflation and targets:
+             self.get_logger().warn("A* falhou para alvos próximos. Tentando alvo aleatório não visitado.")
+             import random
+             random_target = random.choice(targets)
+             target_grid = self.world_to_grid(random_target[0], random_target[1])
+             raw_path = self.a_star(start_grid, target_grid, ignore_inflation=False)
+             if raw_path:
+                path_found = self.simplify_path(raw_path)
 
         if path_found:
             self.current_path = [self.grid_to_world(p[0], p[1]) for p in path_found]
@@ -498,13 +543,14 @@ class MyRobotExplorer(Node):
                 ps.pose.position.y = wp[1]
                 path_msg.poses.append(ps)
             self.pub_planned_path.publish(path_msg)
-            
             self.state = "MOVING"
         else:
             if in_inflation:
                 self.get_logger().error("Resgate falhou. Robô imóvel.")
+            elif not targets:
+                self.get_logger().info("Cobertura Finalizada (100% Visitado ou Inacessível).")
             else:
-                self.get_logger().info("Mapeamento finalizado.")
+                self.get_logger().warn("Falha no planejamento. Tentando novamente...")
             
             self.stop_robot()
             self.state = "IDLE"
@@ -530,14 +576,10 @@ class MyRobotExplorer(Node):
         
         elif self.state == "AVOIDING":
             yaw_err = self.avoid_angle
-            
-            # COMPORTAMENTO ESTRITO: GIRA, DEPOIS ANDA
-            # Se o erro for maior que o threshold (~11 graus), a velocidade linear é ZERO.
             if abs(yaw_err) > ALIGNMENT_THRESHOLD: 
                 target_v = 0.0
                 target_w = np.clip(yaw_err * KP_ANGULAR, -MAX_ANGULAR_SPEED, MAX_ANGULAR_SPEED)
             else:
-                # Se estiver alinhado, permite andar e ajustar suavemente
                 speed_factor = (1.0 - (abs(yaw_err) / ALIGNMENT_THRESHOLD)) 
                 target_v = MAX_LINEAR_SPEED * 0.5 * max(0.0, speed_factor)
                 target_w = np.clip(yaw_err * KP_ANGULAR, -MAX_ANGULAR_SPEED, MAX_ANGULAR_SPEED)
@@ -569,17 +611,13 @@ class MyRobotExplorer(Node):
                     yaw_err = target_yaw - self.robot_pose[2]
                     yaw_err = math.atan2(math.sin(yaw_err), math.cos(yaw_err))
                     
-                    # COMPORTAMENTO ESTRITO NO MODO MOVING TAMBÉM
-                    # Se estiver desalinhado (> 11 graus), PARA e GIRA.
                     if abs(yaw_err) > ALIGNMENT_THRESHOLD:
                         target_v = 0.0
                         target_w = np.clip(yaw_err * KP_ANGULAR, -MAX_ANGULAR_SPEED, MAX_ANGULAR_SPEED)
                     else:
-                        # Se estiver alinhado, segue normal
                         target_v = np.clip(distance, 0.0, MAX_LINEAR_SPEED)
                         target_w = np.clip(yaw_err * KP_ANGULAR, -MAX_ANGULAR_SPEED, MAX_ANGULAR_SPEED)
 
-        # RAMPA DE ACELERAÇÃO
         lin_diff = target_v - self.last_linear_vel
         ang_diff = target_w - self.last_angular_vel
         
@@ -602,7 +640,7 @@ class MyRobotExplorer(Node):
 
 def main(args=None):
     rclpy.init(args=args)
-    node = MyRobotExplorer()
+    node = MyRobotCoverage()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:

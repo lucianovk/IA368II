@@ -4,7 +4,7 @@ Script rápido para comparar posições reais no CoppeliaSim.
 
 Lê a pose de /myRobot e de um objeto passado na linha de comando
 e imprime posições (x,y,z) e distâncias (plana e 3D). Útil para
-conferir se o my_robot_yolo_key_node está estimando corretamente.
+conferir se o my_robot_detection_node está estimando corretamente.
 
 Uso:
   python3 scripts/check_object_distance.py /nomeDoObjeto
