@@ -42,8 +42,8 @@ setup(
             'my_robot_vision_node = my_robot.my_robot_vision_node:main',
             'my_robot_detection_node = my_robot.my_robot_detection_node:main',
             'my_robot_serialize_pose_graph_node = my_robot.my_robot_serialize_pose_graph_node:main',
-            'my_robot_semantic_room_segmentation_node = my_robot.my_robot_semantic_room_segmentation_node:main',
-            'my_robot_room_segmentation_node = my_robot.my_robot_room_segmentation_node:main',
+            'my_robot_semantic_segmentation_node = my_robot.my_robot_semantic_segmentation_node:main',
+            'my_robot_topologic_segmentation_node = my_robot.my_robot_topologic_segmentation_node:main',
             
         ],
     },

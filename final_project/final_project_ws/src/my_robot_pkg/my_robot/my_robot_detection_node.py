@@ -2,7 +2,7 @@
 import json
 import math
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Set
 
 import numpy as np
 import rclpy
@@ -31,7 +31,7 @@ except Exception:
 class MyRobotDetectionNode(Node):
     """
     Lê /camera continuamente, roda YOLO e mantém um mapa de detecções únicas.
-    Cada nova detecção é publicada em /detections_map e registrada em disco.
+    Cada nova detecção é publicada em /detections_markers e registrada em disco.
     """
 
     def __init__(self):
@@ -76,6 +76,7 @@ class MyRobotDetectionNode(Node):
         self.no_detection_logged = False
         self.map_log_interval = Duration(seconds=10.0)
         self.last_map_log_time: Optional[Time] = None
+        self.warned_messages: Set[str] = set()
 
         self.sub = self.create_subscription(
             Image, self.camera_topic, self.image_callback, 10
@@ -92,7 +93,7 @@ class MyRobotDetectionNode(Node):
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
         # Publisher para mapa de detecções
-        self.map_pub = self.create_publisher(MarkerArray, '/detections_map', 10)
+        self.map_pub = self.create_publisher(MarkerArray, '/detections_markers', 10)
         self.map_timer = self.create_timer(2.0, self.publish_detection_map)
 
         # Modelo YOLO
@@ -159,14 +160,12 @@ class MyRobotDetectionNode(Node):
 
     def depth_callback(self, msg: Image):
         if msg.encoding.lower() not in ('32fc1', '32f'):
-            self.get_logger().warn_once(f'Encoding depth não suportado: {msg.encoding}')
+            self.warn_once('depth_encoding', f'Encoding depth não suportado: {msg.encoding}')
             return
         arr = np.frombuffer(msg.data, dtype=np.float32)
         expected = msg.width * msg.height
         if arr.size != expected:
-            self.get_logger().warn_once(
-                f'Tamanho depth inesperado: {arr.size} vs {expected}'
-            )
+            self.warn_once('depth_size', f'Tamanho depth inesperado: {arr.size} vs {expected}')
             return
         arr = arr.reshape((msg.height, msg.width))
         self.last_depth = (msg, arr)
@@ -258,9 +257,7 @@ class MyRobotDetectionNode(Node):
         names = det.names if hasattr(det, 'names') else self.model.names
 
         if self.map_msg is None or self.map_np is None:
-            self.get_logger().warn_once(
-                'Mapa /map ainda não recebido; detecções serão ignoradas até então.'
-            )
+            self.warn_once('missing_map', 'Mapa /map ainda não recebido; detecções serão ignoradas até então.')
             return
 
         map_updated = False
@@ -515,7 +512,7 @@ class MyRobotDetectionNode(Node):
                 should_log = delta.nanoseconds >= self.map_log_interval.nanoseconds
             if should_log:
                 self.get_logger().info(
-                    f'/detections_map publicado com {len(self.detection_records)} detecções.'
+                    f'/detections_markers publicado com {len(self.detection_records)} detecções.'
                 )
                 self.last_map_log_time = now
 
@@ -526,6 +523,11 @@ class MyRobotDetectionNode(Node):
 
     def _mark_detection_activity(self) -> None:
         self.no_detection_logged = False
+
+    def warn_once(self, key: str, message: str) -> None:
+        if key not in self.warned_messages:
+            self.get_logger().warn(message)
+            self.warned_messages.add(key)
 
     def is_position_mapped(self, x_map: float, y_map: float) -> bool:
         if self.map_msg is None or self.map_np is None:

@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.conditions import IfCondition
@@ -9,6 +11,7 @@ from launch_ros.substitutions import FindPackageShare
 
 def generate_launch_description():
     urdf_file = LaunchConfiguration('urdf')
+    package_dir = Path(__file__).resolve().parent.parent
     default_urdf = PathJoinSubstitution(
         [
             FindPackageShare('my_robot_pkg'),
@@ -16,13 +19,7 @@ def generate_launch_description():
             'my_robot.urdf',
         ]
     )
-    default_rviz = PathJoinSubstitution(
-        [
-            FindPackageShare('my_robot_pkg'),
-            'rviz',
-            'my_robot.rviz',
-        ]
-    )
+    default_rviz = str(package_dir / 'rviz' / 'my_robot.rviz')
 
     return LaunchDescription(
         [

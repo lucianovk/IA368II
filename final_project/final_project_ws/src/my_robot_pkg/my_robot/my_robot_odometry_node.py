@@ -23,7 +23,7 @@ class CoppeliaOdometryPublisher(Node):
     def __init__(self):
         super().__init__('my_robot_odometry_node')
 
-        self.pub = self.create_publisher(Odometry, '/odom', 10)
+        self.pub = self.create_publisher(Odometry, '/myrobot/odom', 10)
         self.tf_broadcaster = TransformBroadcaster(self)
 
         self.client = RemoteAPIClient()
@@ -57,7 +57,7 @@ class CoppeliaOdometryPublisher(Node):
 
         msg = Odometry()
         msg.header.stamp = now.to_msg()
-        msg.header.frame_id = 'odom'
+        msg.header.frame_id = 'my_robot_odom'
         msg.child_frame_id = 'base_footprint'
 
         msg.pose.pose.position.x = x
@@ -85,7 +85,7 @@ class CoppeliaOdometryPublisher(Node):
         # Broadcast TF odom -> base_footprint
         t = TransformStamped()
         t.header.stamp = msg.header.stamp
-        t.header.frame_id = 'odom'
+        t.header.frame_id = 'my_robot_odom'
         t.child_frame_id = 'base_footprint'
         t.transform.translation.x = x
         t.transform.translation.y = y
