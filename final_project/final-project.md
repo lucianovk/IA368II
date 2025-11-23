@@ -30,20 +30,20 @@ Additional tools:
 
 1. **Occupancy & Room Segmentation**  
 
-   ![Topologic segmentation](screenshots/topologic_room_segmentation.png)
+   ![Topologic segmentation](./screenshots/topologic_room_segmentation.png)
 
    The SLAM stack generates a 2D occupancy grid. Room segmentation (based on IPA room segmentation and coverage-planning techniques) clusters the map into room IDs.  
    
    
 2. **Object Detection**  
 
-   ![Bathroom example](screenshots/toilet.jpg)
+   ![Bathroom example](./screenshots/toilet.jpg)
    
    YOLO11 is trained/fine-tuned with everyday household objects (InteriorGS dataset, annotated scenes, and domain randomization). Debug overlays can be inspected in RViz.  
 
 3. **Semantic Assignment**  
 
-   ![Semantic room label coloring](screenshots/semantic_room_segmentation.png)
+   ![Semantic room label coloring](./screenshots/semantic_room_segmentation.png)
 
    Detected objects are mapped to canonical room labels through a lookup table stored in `config/semantic_room_seg_classes.json`. For example, finding *stove*, *pan* → `kitchen`; *mirror*, *toilet* → `bathroom`.  
 
