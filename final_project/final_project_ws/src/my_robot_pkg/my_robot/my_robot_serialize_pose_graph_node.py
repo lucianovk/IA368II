@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Nó que chama periodicamente o serviço slam_toolbox/SerializePoseGraph
-para salvar o grafo de poses em disco.
+Node that periodically calls the slam_toolbox/SerializePoseGraph service
+to save the pose graph to disk.
 """
 
 from pathlib import Path
@@ -39,20 +39,20 @@ class PoseGraphSerializerNode(Node):
         self.initial_timer = self.create_timer(1.0, self._initial_serialization_check)
 
         self.get_logger().info(
-            f'Serialização periódica habilitada. Serviço={self.service_name} '
-            f'saída={self.output_dir} intervalo={self.interval:.1f}s'
+            f'Periodic serialization enabled. service={self.service_name} '
+            f'output={self.output_dir} interval={self.interval:.1f}s'
         )
 
     def trigger_serialization(self) -> None:
         if self.pending_future is not None and not self.pending_future.done():
             return
         if not self.client.wait_for_service(timeout_sec=0.0):
-            self.get_logger().warn('Serviço SerializePoseGraph indisponível.')
+            self.get_logger().warn('SerializePoseGraph service unavailable.')
             return
         filename = self.output_dir / 'my_robot_pose_graph'
         request = SerializePoseGraph.Request()
         request.filename = str(filename)
-        self.get_logger().info(f'Serializando pose graph em {request.filename}')
+        self.get_logger().info(f'Serializing pose graph to {request.filename}')
         self.pending_future = self.client.call_async(request)
         self.pending_future.add_done_callback(self._handle_response)
 
@@ -60,15 +60,15 @@ class PoseGraphSerializerNode(Node):
         try:
             response = future.result()
         except Exception as exc:  # pragma: no cover
-            self.get_logger().error(f'Erro ao serializar grafo de poses: {exc}')
+            self.get_logger().error(f'Failed to serialize pose graph: {exc}')
             self.pending_future = None
             return
 
         result_code = getattr(response, 'result', None)
         if result_code == 0:
-            self.get_logger().info('SerializePoseGraph concluído com sucesso.')
+            self.get_logger().info('SerializePoseGraph completed successfully.')
         else:
-            self.get_logger().warn(f'SerializePoseGraph retornou código {result_code}')
+            self.get_logger().warn(f'SerializePoseGraph returned code {result_code}')
         self.pending_future = None
 
     def _initial_serialization_check(self) -> None:

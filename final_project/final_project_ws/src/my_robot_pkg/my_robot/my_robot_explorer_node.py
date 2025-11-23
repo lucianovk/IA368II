@@ -10,29 +10,29 @@ import math
 import heapq
 from scipy.ndimage import distance_transform_edt, binary_dilation
 
-# --- Configurações do Robô ---
+# --- Robot configuration ---
 ROBOT_RADIUS = 0.16
 INFLATION_RADIUS = 0.25 
-COVERAGE_RADIUS = 0.30  # Raio que o robô "pinta" como visitado ao passar
+COVERAGE_RADIUS = 0.30  # Radius the robot "paints" as visited while moving
 
-# Velocidades
+# Speed limits
 MAX_LINEAR_SPEED = 0.5 
 MAX_ANGULAR_SPEED = 0.8
 MAX_ACCEL = 0.2         
 MAX_ANGULAR_ACCEL = 0.5 
 KP_ANGULAR = 1.8        
 
-# --- Configurações de Navegação ---
-ALIGNMENT_THRESHOLD = 0.20  # (rad) ~11 graus.
+# --- Navigation configuration ---
+ALIGNMENT_THRESHOLD = 0.20  # (rad) ~11 degrees.
 
-# --- Configurações de Sensores e Histerese ---
+# --- Sensor configuration and hysteresis ---
 SCAN_FOV_DEG = 60          
 COLLISION_DIST_NORMAL = 0.35  
 COLLISION_DIST_RESCUE = 0.15  
 SCAN_CLEAR_DIST = 0.75      
 SCAN_SAFE_BUBBLE = 0.36     
 
-# --- Configurações de Custo ---
+# --- Cost configuration ---
 WALL_PENALTY_FACTOR = 10.0 
 SAFE_DIST_METERS = 0.6     
 
@@ -69,14 +69,14 @@ class MyRobotCoverage(Node):
         self.pub_followed_path = self.create_publisher(Path, '/followed_path', 10)
         self.pub_inflated = self.create_publisher(OccupancyGrid, '/inflated_obstacle', qos_map)
         
-        # NOVO PUBLISHER: Mapa de Visitados
+        # Publisher for the visited map visualization
         self.pub_visited = self.create_publisher(OccupancyGrid, '/visited_map', qos_map)
 
-        # Estado Interno
+        # Internal state
         self.map_data = None
         self.inflated_map_data = None
         
-        # NOVO: Grid de Visitados
+        # Visited grid storage
         self.visited_grid = None 
         
         self.cost_map = None
@@ -97,13 +97,13 @@ class MyRobotCoverage(Node):
 
         self.is_rescuing = False
 
-        # Controle Suave
+        # Smooth control
         self.last_linear_vel = 0.0
         self.last_angular_vel = 0.0
         self.dt = 0.05 
 
         self.timer = self.create_timer(self.dt, self.control_loop)
-        self.get_logger().info("Coverage Node (Fill the Map) Iniciado")
+        self.get_logger().info("Coverage Node (Fill the Map) started")
 
     def euler_from_quaternion(self, q):
         siny_cosp = 2 * (q.w * q.z + q.x * q.y)
@@ -116,7 +116,7 @@ class MyRobotCoverage(Node):
         yaw = self.euler_from_quaternion(q)
         self.robot_pose = (p.x, p.y, yaw)
 
-        # Atualiza o mapa de visitados com a posição atual
+        # Update the visited map with the current position
         self.update_visited_map()
 
         pose_stamped = PoseStamped()
@@ -138,15 +138,15 @@ class MyRobotCoverage(Node):
         height = msg.info.height
         resolution = msg.info.resolution
         
-        # 0 = livre, 100 = ocupado, -1 = desconhecido
+        # 0 = free, 100 = occupied, -1 = unknown
         grid = np.array(msg.data, dtype=np.int8).reshape((height, width))
         
-        # Inicializa ou redimensiona o mapa de visitados se necessário
-        # Se o mapa crescer (slam_toolbox faz isso), precisamos resetar ou expandir.
-        # Por simplicidade, se mudar o tamanho, resetamos o visited (ou cria novo).
+        # Initialize or resize the visited map if needed.
+        # If the map grows (slam_toolbox can do this) we reset or expand the visited grid.
+        # For simplicity, recreate it when the size changes.
         if self.visited_grid is None or self.visited_grid.shape != grid.shape:
             self.visited_grid = np.zeros_like(grid, dtype=np.int8)
-            self.get_logger().info(f"Mapa de Visitados inicializado: {width}x{height}")
+            self.get_logger().info(f"Visited map initialized: {width}x{height}")
 
         cells_radius = int(math.ceil(INFLATION_RADIUS / resolution))
         obstacles = (grid > 0)
@@ -177,7 +177,7 @@ class MyRobotCoverage(Node):
             self.state = "PLANNING"
 
     def update_visited_map(self):
-        """ Marca a região atual do robô como visitada (valor 100) """
+        """Mark the robot's current neighborhood as visited (value 100)."""
         if self.map_info is None or self.visited_grid is None or self.robot_pose is None:
             return
 
@@ -189,7 +189,7 @@ class MyRobotCoverage(Node):
         res = self.map_info.resolution
         radius_cells = int(math.ceil(COVERAGE_RADIUS / res))
 
-        # Cria uma máscara circular simples
+        # Create a simple circular mask
         rows, cols = self.visited_grid.shape
         y, x = np.ogrid[-radius_cells:radius_cells+1, -radius_cells:radius_cells+1]
         mask = x**2 + y**2 <= radius_cells**2
@@ -200,16 +200,15 @@ class MyRobotCoverage(Node):
         c_start = max(0, c - radius_cells)
         c_end = min(cols, c + radius_cells + 1)
 
-        # Ajusta a máscara se estivermos na borda do mapa
+        # Adjust the mask when near the map boundary
         mask_h = r_end - r_start
         mask_w = c_end - c_start
         
-        # Pega a sub-seção da máscara correta
-        # (Lógica simplificada: itera sobre a caixa delimitadora)
+        # Iterate over the bounding box and apply the mask
         for i in range(r_start, r_end):
             for j in range(c_start, c_end):
                 if (i - r)**2 + (j - c)**2 <= radius_cells**2:
-                    self.visited_grid[i, j] = 100 # Marca como visitado
+                    self.visited_grid[i, j] = 100  # Mark as visited
 
         # Publica o mapa de visitados
         visited_msg = OccupancyGrid()
@@ -265,7 +264,7 @@ class MyRobotCoverage(Node):
             current_collision_threshold = COLLISION_DIST_RESCUE
 
         if self.state == "MOVING" and self.min_front_dist < current_collision_threshold:
-            self.get_logger().warn(f"Colisão ({self.min_front_dist:.2f}m). Parando e Iniciando Fuga.")
+            self.get_logger().warn(f"Collision ({self.min_front_dist:.2f} m). Stopping and starting escape mode.")
             self.stop_robot()
             self.state = "AVOIDING"
             self.avoid_angle = self.get_best_escape_angle(msg.ranges, msg.angle_min, msg.angle_increment)
@@ -302,16 +301,16 @@ class MyRobotCoverage(Node):
 
     def find_unvisited_targets(self):
         """
-        Substitui find_frontiers.
-        Procura células que são LIVRES no mapa (0) mas NÃO VISITADAS (0) no visited_grid.
-        Apenas retorna células que também são seguras (0 no inflated_map).
+        Replacement for find_frontiers.
+        Finds cells that are FREE in the map (0) but NOT VISITED (0) in visited_grid.
+        Only returns cells that are also safe (0 in inflated_map).
         """
         if self.inflated_map_data is None or self.visited_grid is None: return []
         
-        # Critério: Livre no mapa fisico E Não visitado E Seguro (não inflado)
-        # map_data == 0 -> Livre conhecido
-        # visited_grid == 0 -> Ainda não passei por lá
-        # inflated_map_data == 0 -> Longe de paredes
+        # Criteria: free in the physical map AND not visited AND safe (not inflated)
+        # map_data == 0 -> free
+        # visited_grid == 0 -> not yet visited
+        # inflated_map_data == 0 -> far from walls
         candidates_mask = (self.map_data == 0) & (self.visited_grid == 0) & (self.inflated_map_data == 0)
         
         candidate_indices = np.argwhere(candidates_mask)
@@ -319,7 +318,7 @@ class MyRobotCoverage(Node):
         if len(candidate_indices) == 0: return []
 
         candidates = []
-        # Downsampling agressivo para performance, já que teremos muitos pontos "não visitados"
+        # Aggressive downsampling for performance since many cells will be unvisited
         step = max(1, len(candidate_indices) // 50) 
         
         for i in range(0, len(candidate_indices), step):
@@ -453,8 +452,8 @@ class MyRobotCoverage(Node):
 
     def get_farthest_reachable(self):
         if self.inflated_map_data is None: return None
-        # Procura qualquer célula livre e segura (ignora se foi visitada ou não)
-        # Utilizado como fallback se não achar alvos de cobertura
+        # Find a random free and safe cell (ignores visited state)
+        # Used as fallback when no coverage targets are available
         free_indices = np.argwhere(self.inflated_map_data == 0)
         if len(free_indices) == 0: return None
         
@@ -482,14 +481,14 @@ class MyRobotCoverage(Node):
         self.is_rescuing = False
 
         if in_inflation:
-            self.get_logger().warn("Robô em zona de inflação. Calculando rota de resgate...")
+            self.get_logger().warn("Robot inside inflation zone. Planning a rescue route...")
             safe_grid = self.find_nearest_safe_cell(start_grid)
             
             if safe_grid:
                 escape_path = self.a_star(start_grid, safe_grid, ignore_inflation=True)
                 if escape_path:
                     self.is_rescuing = True 
-                    # Tenta ir para qualquer área não visitada após escapar
+                    # Try to reach any unvisited area after escaping
                     targets = self.find_unvisited_targets()
                     safe_world = self.grid_to_world(safe_grid[0], safe_grid[1])
                     targets.sort(key=lambda p: math.hypot(p[0]-safe_world[0], p[1]-safe_world[1]))
@@ -503,15 +502,15 @@ class MyRobotCoverage(Node):
                                 path_found = self.simplify_path(full_path)
                                 break
         else:
-            # Estratégia de Cobertura: Busca o alvo NÃO VISITADO mais próximo
+            # Coverage strategy: search for the closest NOT VISITED target
             targets = self.find_unvisited_targets()
             
             if not targets:
-                self.get_logger().info("Nenhum alvo não visitado encontrado. Cobertura completa!")
+                self.get_logger().info("No unvisited targets found. Coverage complete!")
             else:
                 targets.sort(key=lambda p: math.hypot(p[0]-self.robot_pose[0], p[1]-self.robot_pose[1]))
                 
-                # Tenta os 5 mais próximos para evitar falhas de A*
+                # Try the 5 nearest targets to avoid A* failures
                 for target_world in targets[:5]:
                     target_grid = self.world_to_grid(target_world[0], target_world[1])
                     if target_grid:
@@ -520,10 +519,10 @@ class MyRobotCoverage(Node):
                             path_found = self.simplify_path(raw_path)
                             break
         
-        # Fallback: Se não achou caminho ou acabou a cobertura, tenta mover para o ponto mais longe livre
-        # apenas para garantir que não estamos travados, ou finaliza.
+        # Fallback: if no route is found or coverage ended, move toward the farthest free point
+        # to ensure we are not stuck (or finish if nothing else works).
         if not path_found and not in_inflation and targets:
-             self.get_logger().warn("A* falhou para alvos próximos. Tentando alvo aleatório não visitado.")
+             self.get_logger().warn("A* failed for nearby targets. Trying a random unvisited target.")
              import random
              random_target = random.choice(targets)
              target_grid = self.world_to_grid(random_target[0], random_target[1])
@@ -546,9 +545,9 @@ class MyRobotCoverage(Node):
             self.state = "MOVING"
         else:
             if in_inflation:
-                self.get_logger().error("Resgate falhou. Robô imóvel.")
+                self.get_logger().error("Rescue maneuver failed. Robot is immobile.")
             elif not targets:
-                self.get_logger().info("Cobertura Finalizada (100% Visitado ou Inacessível).")
+                self.get_logger().info("Coverage completed (100% visited or inaccessible).")
             else:
                 self.get_logger().warn("Falha no planejamento. Tentando novamente...")
             

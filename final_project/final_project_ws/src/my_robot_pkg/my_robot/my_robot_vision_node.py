@@ -27,7 +27,7 @@ class CoppeliaVisionPublisher(Node):
         self.client = RemoteAPIClient()
         self.sim = self.client.require('sim')
         self.vision_handle = self.sim.getObject('/myRobot/visionSensor')
-        # Planos de corte obtidos diretamente do sensor
+        # Clipping planes fetched directly from the sensor
         try:
             self.near_clip = self.sim.getObjectFloatParam(
                 self.vision_handle, self.sim.visionfloatparam_near_clipping
@@ -39,17 +39,17 @@ class CoppeliaVisionPublisher(Node):
                 self.vision_handle, self.sim.visionfloatparam_perspective_angle
             )
             self.fov_deg = math.degrees(fov_rad)
-            self.get_logger().info(f'FOV do sensor: {self.fov_deg:.2f} graus')
+            self.get_logger().info(f'Sensor FOV: {self.fov_deg:.2f} degrees')
             self.get_logger().info(
-                f'Clipping do sensor: near={self.near_clip:.3f} m, far={self.far_clip:.3f} m'
+                f'Sensor clipping: near={self.near_clip:.3f} m, far={self.far_clip:.3f} m'
             )
         except Exception as exc:
-            self.get_logger().warn(f'Falha ao obter clipping/FOV do sensor: {exc}')
+            self.get_logger().warn(f'Failed to query sensor clipping/FOV: {exc}')
             self.near_clip = 0.2
             self.far_clip = 3.5
             self.fov_deg = 57.0
 
-        # Static TF camera_link 0.12 m acima de base_link
+        # Static TF that keeps camera_link 0.12 m above base_link
         self.static_tf_broadcaster = StaticTransformBroadcaster(self)
         static_t = TransformStamped()
         static_t.header.stamp = self.get_clock().now().to_msg()
@@ -58,7 +58,7 @@ class CoppeliaVisionPublisher(Node):
         static_t.transform.translation.x = 0.0
         static_t.transform.translation.y = 0.0
         static_t.transform.translation.z = 0.12
-        # Orientação: alinhada com eixo X, sem inclinação
+        # Orientation: aligned with the X axis, no tilt
         static_t.transform.rotation.x = 0.0
         static_t.transform.rotation.y = 0.70710678118
         static_t.transform.rotation.z = 0.0
@@ -67,24 +67,24 @@ class CoppeliaVisionPublisher(Node):
 
         # 10 Hz
         self.timer = self.create_timer(0.1, self.timer_callback)
-        self.get_logger().info('CoppeliaVisionPublisher iniciado.')
+        self.get_logger().info('CoppeliaVisionPublisher started.')
         self.first_frame_logged = False
 
     def timer_callback(self):
         try:
-            # Garante que o sensor é processado antes de ler imagem/depth
+            # Ensure the sensor is processed before retrieving the image/depth
             self.sim.handleVisionSensor(self.vision_handle)
         except Exception as exc:
-            self.get_logger().warn(f'Falha ao processar vision sensor: {exc}')
+            self.get_logger().warn(f'Failed to process vision sensor: {exc}')
             return
 
         try:
             raw = self.sim.getVisionSensorCharImage(self.vision_handle)
         except Exception as exc:  # pragma: no cover - melhor logar que travar
-            self.get_logger().warn(f'Falha ao ler visão: {exc}')
+            self.get_logger().warn(f'Failed to read vision sensor: {exc}')
             return
 
-        # CoppeliaSim Python API pode retornar (img, resX, resY) ou (res, img)
+        # The CoppeliaSim Python API may return (img, resX, resY) or (res, img)
         image = None
         resolution = None
         if isinstance(raw, (list, tuple)):
@@ -93,13 +93,13 @@ class CoppeliaVisionPublisher(Node):
                 resolution = (res_x, res_y)
             elif len(raw) == 2:
                 a, b = raw
-                # tenta inferir qual é a resolução
+                # attempt to infer which entry contains the resolution
                 if isinstance(a, (list, tuple)) and len(a) == 2:
                     resolution, image = a, b
                 elif isinstance(b, (list, tuple)) and len(b) == 2:
                     resolution, image = b, a
         if resolution is None or image is None:
-            self.get_logger().warn(f'Retorno inesperado do sensor de visao: {type(raw)} {raw}')
+            self.get_logger().warn(f'Unexpected vision sensor return: {type(raw)} {raw}')
             return
 
         if resolution is None or image is None:
@@ -107,24 +107,22 @@ class CoppeliaVisionPublisher(Node):
 
         width, height = int(resolution[0]), int(resolution[1])
         if width <= 0 or height <= 0:
-            self.get_logger().warn(f'Resolucao invalida recebida: {resolution}')
+            self.get_logger().warn(f'Invalid resolution received: {resolution}')
             return
 
         arr = np.frombuffer(image, dtype=np.uint8)
         expected = width * height * 3
         if arr.size != expected:
             self.get_logger().warn(
-                f'Tamanho inesperado da imagem: {arr.size} vs esperado {expected} '
-                f'(resolucao {width}x{height})'
+                f'Unexpected image size: {arr.size} vs expected {expected} '
+                f'(resolution {width}x{height})'
             )
             return
 
         arr = arr.reshape((height, width, 3))
 
-        # Ajuste de orientação: se visualizar de cabeça para baixo, troque para np.flipud(arr)
-        # ou rotacione conforme necessário. Aqui mantemos sem flips.
-
-        lfarr=np.fliplr(arr)
+        # Orientation tweak: flip horizontally so the view matches RViz expectations.
+        lfarr = np.fliplr(arr)
         arr_uint8 = lfarr.copy()
 
         msg = Image()
@@ -141,7 +139,7 @@ class CoppeliaVisionPublisher(Node):
 
         if not self.first_frame_logged:
             self.get_logger().info(
-                f'Primeiro frame publicado: {width}x{height}, encoding rgb8, step {msg.step}'
+                f'First frame published: {width}x{height}, encoding rgb8, step {msg.step}'
             )
             self.first_frame_logged = True
 
@@ -149,7 +147,7 @@ class CoppeliaVisionPublisher(Node):
         try:
             depth_raw = self.sim.getVisionSensorDepth(self.vision_handle)
         except Exception as exc:  # pragma: no cover
-            self.get_logger().warn(f'Falha ao ler depth: {exc}')
+            self.get_logger().warn(f'Failed to read depth: {exc}')
             return
 
         depth_image = None
@@ -166,16 +164,16 @@ class CoppeliaVisionPublisher(Node):
                     depth_res, depth_image = b, a
 
         if depth_res is None or depth_image is None:
-            self.get_logger().warn(f'Retorno inesperado do depth: {type(depth_raw)} {depth_raw}')
+            self.get_logger().warn(f'Unexpected depth return: {type(depth_raw)} {depth_raw}')
             return
 
         d_width, d_height = int(depth_res[0]), int(depth_res[1])
         if d_width != width or d_height != height:
             self.get_logger().warn(
-                f'Resolucao depth difere da RGB: depth {d_width}x{d_height} vs rgb {width}x{height}'
+                f'Depth resolution differs from RGB: depth {d_width}x{d_height} vs rgb {width}x{height}'
             )
 
-        # depth_image pode vir como bytes ou lista de floats
+        # depth_image may be bytes or a float list
         if isinstance(depth_image, (bytes, bytearray)):
             depth_arr = np.frombuffer(depth_image, dtype=np.float32)
         else:
@@ -183,26 +181,26 @@ class CoppeliaVisionPublisher(Node):
         expected_depth = d_width * d_height
         if depth_arr.size != expected_depth:
             self.get_logger().warn(
-                f'Tamanho depth inesperado: {depth_arr.size} vs esperado {expected_depth} '
-                f'(resolucao {d_width}x{d_height})'
+                f'Unexpected depth size: {depth_arr.size} vs expected {expected_depth} '
+                f'(resolution {d_width}x{d_height})'
             )
             return
 
         depth_arr = depth_arr.reshape((d_height, d_width))
 
-        # Converte depth normalizado (0..1) para metros usando near/far do sensor
+        # Convert normalized depth (0..1) to meters using the sensor near/far planes
         try:
             near = self.near_clip
             far = self.far_clip
             depth_arr = near + depth_arr * (far - near)
         except Exception as exc:
-            self.get_logger().warn(f'Falha ao converter depth para metros: {exc}')
+            self.get_logger().warn(f'Failed to convert depth to meters: {exc}')
 
-        # Garante mesma orientação horizontal aplicada na imagem RGB
+        # Apply the same horizontal flip as the RGB image
         depth_arr = np.fliplr(depth_arr)
 
         depth_msg = Image()
-        depth_msg.header.stamp = msg.header.stamp  # usar mesmo timestamp da RGB
+        depth_msg.header.stamp = msg.header.stamp  # reuse the RGB timestamp
         depth_msg.header.frame_id = 'camera_link'
         depth_msg.height = d_height
         depth_msg.width = d_width

@@ -7,7 +7,7 @@ from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description():
-    """Bring up nodes needed for mapping and periodic pose-graph serialization."""
+    """Launch the localization stack plus semantics/perception helpers."""
     slam_start_delay = LaunchConfiguration('slam_start_delay')
     use_sim_time = LaunchConfiguration('use_sim_time')
 
@@ -33,7 +33,7 @@ def generate_launch_description():
         [
             FindPackageShare('my_robot_pkg'),
             'config',
-            'slam_map_params.yaml',
+            'slam_loc_params.yaml',
         ]
     )
     log_args = ['--ros-args', '--log-level', 'warn']
@@ -42,7 +42,8 @@ def generate_launch_description():
         [
             declare_slam_start_delay,
             declare_use_sim_time,
-            # Static TFs ensure the base tree is ready before perception starts up.
+            # The robot publishes odometry in base_link, so we hand out static transforms
+            # upfront to guarantee TF consumers have a sane tree before sensors start.
             Node(
                 package='tf2_ros',
                 executable='static_transform_publisher',
@@ -112,7 +113,7 @@ def generate_launch_description():
             #     arguments=log_args,
             #     parameters=[{'use_sim_time': use_sim_time}],
             # ),
-            # Minimal perception stack, used by both exploration and semantic nodes.
+            # Core teleop/perception stack so localization can run autonomously.
             Node(
                 package='my_robot_pkg',
                 executable='my_robot_scan_node',
@@ -171,25 +172,16 @@ def generate_launch_description():
             ),
             Node(
                 package='my_robot_pkg',
-                executable='my_robot_cartographer_node',
-                name='my_robot_cartographer_node',
+                executable='my_robot_explorer_node',
+                name='my_robot_explorer_node',
                 output='screen',
                 arguments=log_args,
-                parameters=[{'use_sim_time': use_sim_time}],
-            ),
-            Node(
-                package='my_robot_pkg',
-                executable='my_robot_serialize_pose_graph_node',
-                name='my_robot_serialize_pose_graph_node',
-                output='screen',
-                arguments=log_args,
-                # Periodically dumps the pose graph to disk so mapping progress is saved.
                 parameters=[{'use_sim_time': use_sim_time}],
             ),
             TimerAction(
                 period=LaunchConfiguration('slam_start_delay'),
                 actions=[
-                    # Keep slam_toolbox launch until TF and filters have produced data.
+                    # Defer slam_toolbox until the TF tree (base_link -> odom) is live.
                     IncludeLaunchDescription(
                         PythonLaunchDescriptionSource(
                             PathJoinSubstitution(

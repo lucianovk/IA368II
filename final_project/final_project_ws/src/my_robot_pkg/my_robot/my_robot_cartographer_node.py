@@ -10,7 +10,7 @@ import math
 import heapq
 from scipy.ndimage import distance_transform_edt, binary_dilation
 
-# --- Configurações do Robô ---
+# --- Robot configuration ---
 ROBOT_RADIUS = 0.16
 INFLATION_RADIUS = 0.25 
 
@@ -21,21 +21,22 @@ MAX_ACCEL = 0.2
 MAX_ANGULAR_ACCEL = 0.5 
 KP_ANGULAR = 1.8        
 
-# --- Configurações de Navegação ---
-ALIGNMENT_THRESHOLD = 0.20  # (rad) ~11 graus. Se o erro for maior que isso, GIRA PARADO.
+# --- Navigation configuration ---
+ALIGNMENT_THRESHOLD = 0.20  # (rad) ~11 degrees. Above this error the robot rotates in place.
 
-# --- Configurações de Sensores e Histerese ---
+# --- Sensor configuration and hysteresis ---
 SCAN_FOV_DEG = 60          
 COLLISION_DIST_NORMAL = 0.35  
 COLLISION_DIST_RESCUE = 0.15  
 SCAN_CLEAR_DIST = 0.75      
 SCAN_SAFE_BUBBLE = 0.36     
 
-# --- Configurações de Custo ---
+# --- Cost configuration ---
 WALL_PENALTY_FACTOR = 10.0 
 SAFE_DIST_METERS = 0.6     
 
 class AStarNode:
+    """Lightweight container for grid positions during A* search."""
     def __init__(self, parent=None, position=None):
         self.parent = parent
         self.position = position 
@@ -50,6 +51,7 @@ class AStarNode:
         return self.f < other.f
 
 class MyRobotExplorer(Node):
+    """Implements a minimalist explorer that maps frontiers and avoids collisions."""
     def __init__(self):
         super().__init__('my_robot_explorer_node')
 
@@ -90,20 +92,22 @@ class MyRobotExplorer(Node):
 
         self.is_rescuing = False
 
-        # Controle Suave
+        # Smooth control
         self.last_linear_vel = 0.0
         self.last_angular_vel = 0.0
         self.dt = 0.05 
 
         self.timer = self.create_timer(self.dt, self.control_loop)
-        self.get_logger().info("Explorer Node (Rotate-Then-Move Strict) Iniciado")
+        self.get_logger().info("Explorer Node (Rotate-Then-Move Strict) started")
 
     def euler_from_quaternion(self, q):
+        """Return yaw from a geometry_msgs Quaternion."""
         siny_cosp = 2 * (q.w * q.z + q.x * q.y)
         cosy_cosp = 1 - 2 * (q.y * q.y + q.z * q.z)
         return math.atan2(siny_cosp, cosy_cosp)
 
     def odom_callback(self, msg):
+        """Track robot pose and build the breadcrumb path we have followed so far."""
         p = msg.pose.pose.position
         q = msg.pose.pose.orientation
         yaw = self.euler_from_quaternion(q)
@@ -123,6 +127,7 @@ class MyRobotExplorer(Node):
             self.pub_followed_path.publish(self.followed_path_msg)
 
     def map_callback(self, msg):
+        """Inflate obstacles, compute wall proximity costs and trigger planning."""
         self.map_info = msg.info
         width = msg.info.width
         height = msg.info.height
@@ -130,6 +135,7 @@ class MyRobotExplorer(Node):
         
         grid = np.array(msg.data, dtype=np.int8).reshape((height, width))
         
+        # Inflate obstacles using a circular kernel roughly the robot radius.
         cells_radius = int(math.ceil(INFLATION_RADIUS / resolution))
         obstacles = (grid > 0)
         
@@ -141,6 +147,7 @@ class MyRobotExplorer(Node):
         self.inflated_map_data = np.copy(grid)
         self.inflated_map_data[inflated] = 100 
         
+        # The distance transform lets us penalize routes that are too close to obstacles.
         dist_grid = distance_transform_edt(grid == 0) * resolution 
         
         self.cost_map = np.zeros_like(dist_grid)
@@ -160,6 +167,7 @@ class MyRobotExplorer(Node):
             self.state = "PLANNING"
 
     def get_best_escape_angle(self, ranges, angle_min, angle_inc):
+        """Return the direction with the widest clear opening after smoothing noise."""
         clean_ranges = np.array(ranges)
         clean_ranges[clean_ranges == float('inf')] = 10.0
         clean_ranges = np.nan_to_num(clean_ranges, nan=0.0)
@@ -176,19 +184,20 @@ class MyRobotExplorer(Node):
         return math.atan2(math.sin(best_angle), math.cos(best_angle))
 
     def scan_callback(self, msg):
+        """Update collision metrics and drive the collision avoidance state machine."""
         self.scan_ranges = msg.ranges
         self.scan_angle_min = msg.angle_min
         self.scan_angle_inc = msg.angle_increment
 
         if self.robot_pose is None: return
 
-        # 1. Análise 360
+        # 1. 360-degree analysis
         all_ranges = np.array(msg.ranges)
         all_ranges[all_ranges == float('inf')] = 10.0
         all_ranges = np.nan_to_num(all_ranges, nan=10.0)
         self.min_360_dist = np.min(all_ranges)
 
-        # 2. Análise Frontal
+        # 2. Frontal analysis
         fov_rad = math.radians(SCAN_FOV_DEG / 2)
         min_idx = int(( -fov_rad - self.scan_angle_min ) / self.scan_angle_inc)
         max_idx = int(( fov_rad - self.scan_angle_min ) / self.scan_angle_inc)
@@ -208,7 +217,7 @@ class MyRobotExplorer(Node):
             current_collision_threshold = COLLISION_DIST_RESCUE
 
         if self.state == "MOVING" and self.min_front_dist < current_collision_threshold:
-            self.get_logger().warn(f"Colisão ({self.min_front_dist:.2f}m). Parando e Iniciando Fuga.")
+            self.get_logger().warn(f"Collision ({self.min_front_dist:.2f} m). Stopping and starting escape mode.")
             self.stop_robot()
             self.state = "AVOIDING"
             self.avoid_angle = self.get_best_escape_angle(msg.ranges, msg.angle_min, msg.angle_increment)
@@ -232,6 +241,7 @@ class MyRobotExplorer(Node):
                 self.state = "PLANNING"
 
     def world_to_grid(self, wx, wy):
+        """Convert world coordinates into discrete map indices."""
         if self.map_info is None: return None
         mx = int((wx - self.map_info.origin.position.x) / self.map_info.resolution)
         my = int((wy - self.map_info.origin.position.y) / self.map_info.resolution)
@@ -240,12 +250,14 @@ class MyRobotExplorer(Node):
         return None
 
     def grid_to_world(self, r, c):
+        """Return map cell center coordinates in the world frame."""
         if self.map_info is None: return None
         wx = (c * self.map_info.resolution) + self.map_info.origin.position.x + (self.map_info.resolution/2)
         wy = (r * self.map_info.resolution) + self.map_info.origin.position.y + (self.map_info.resolution/2)
         return (wx, wy)
 
     def find_frontiers(self):
+        """Return a subsampled list of frontiers (free cells touching unknown space)."""
         if self.inflated_map_data is None: return []
         
         rows, cols = self.inflated_map_data.shape
@@ -270,6 +282,7 @@ class MyRobotExplorer(Node):
         return candidates
 
     def find_nearest_safe_cell(self, start_grid, max_radius_cells=30):
+        """Flood-fill from the robot pose until we bump into a free cell."""
         rows, cols = self.inflated_map_data.shape
         queue = [start_grid]
         visited = set([start_grid])
@@ -293,6 +306,7 @@ class MyRobotExplorer(Node):
         return None
 
     def a_star(self, start_grid, end_grid, ignore_inflation=False):
+        """Plan a path on the inflated grid, optionally ignoring inflated cells."""
         grid_to_use = self.map_data if ignore_inflation else self.inflated_map_data
 
         if self.map_data[end_grid[0], end_grid[1]] > 0:
@@ -351,6 +365,7 @@ class MyRobotExplorer(Node):
                     if self.cost_map is not None:
                         penalty = self.cost_map[nr, nc]
                     
+                    # Penalize walking too close to walls so smoother routes are preferred.
                     new_g = current_node.g + base_cost + penalty
 
                     if (nr, nc) in visited_costs and visited_costs[(nr, nc)] <= new_g:
@@ -366,6 +381,7 @@ class MyRobotExplorer(Node):
         return None
 
     def simplify_path(self, grid_path):
+        """Remove intermediate waypoints when a straight line between nodes is free."""
         if not grid_path or len(grid_path) < 3: return grid_path
         
         simplified = [grid_path[0]]
@@ -389,6 +405,7 @@ class MyRobotExplorer(Node):
         return simplified
 
     def is_line_free(self, p1, p2):
+        """Bresenham-like scan that confirms a straight connection is traversable."""
         r0, c0 = p1
         r1, c1 = p2
         length = int(math.hypot(r1-r0, c1-c0))
@@ -403,6 +420,7 @@ class MyRobotExplorer(Node):
         return True
 
     def get_farthest_reachable(self):
+        """Pick a distant free cell to keep the robot moving if no frontiers exist."""
         if self.inflated_map_data is None: return None
         
         free_indices = np.argwhere(self.inflated_map_data == 0)
@@ -424,6 +442,7 @@ class MyRobotExplorer(Node):
         return best_pt
 
     def plan_route(self):
+        """Main planner: choose frontiers, rescue if inside inflated cells, publish path."""
         if self.inflated_map_data is None or self.robot_pose is None:
             return
 
@@ -435,7 +454,7 @@ class MyRobotExplorer(Node):
         self.is_rescuing = False
 
         if in_inflation:
-            self.get_logger().warn("Robô em zona de inflação. Calculando rota de resgate...")
+            self.get_logger().warn("Robot inside inflation zone. Planning a rescue route...")
             safe_grid = self.find_nearest_safe_cell(start_grid)
             
             if safe_grid:
@@ -502,7 +521,7 @@ class MyRobotExplorer(Node):
             self.state = "MOVING"
         else:
             if in_inflation:
-                self.get_logger().error("Resgate falhou. Robô imóvel.")
+                self.get_logger().error("Rescue maneuver failed. Robot is immobile.")
             else:
                 self.get_logger().info("Mapeamento finalizado.")
             
@@ -510,14 +529,17 @@ class MyRobotExplorer(Node):
             self.state = "IDLE"
 
     def stop_robot(self):
+        """Publish a zero Twist so any dynamic motion is cancelled."""
         twist = Twist()
         self.pub_cmd.publish(twist)
 
     def control_loop(self):
+        """State machine heartbeat that alternates between planning, avoiding and moving."""
         target_v = 0.0
         target_w = 0.0
 
         if self.state == "MOVING" and self.is_rescuing:
+            # As soon as we escape the inflated area we resume normal frontier logic.
             if self.robot_pose:
                  curr_grid = self.world_to_grid(self.robot_pose[0], self.robot_pose[1])
                  if curr_grid and self.inflated_map_data[curr_grid[0], curr_grid[1]] == 0:
@@ -532,7 +554,7 @@ class MyRobotExplorer(Node):
             yaw_err = self.avoid_angle
             
             # COMPORTAMENTO ESTRITO: GIRA, DEPOIS ANDA
-            # Se o erro for maior que o threshold (~11 graus), a velocidade linear é ZERO.
+            # If the error exceeds the threshold (~11 degrees), linear velocity becomes zero.
             if abs(yaw_err) > ALIGNMENT_THRESHOLD: 
                 target_v = 0.0
                 target_w = np.clip(yaw_err * KP_ANGULAR, -MAX_ANGULAR_SPEED, MAX_ANGULAR_SPEED)

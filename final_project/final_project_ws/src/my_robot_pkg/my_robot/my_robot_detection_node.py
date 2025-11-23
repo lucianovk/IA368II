@@ -30,8 +30,8 @@ except Exception:
 
 class MyRobotDetectionNode(Node):
     """
-    Lê /camera continuamente, roda YOLO e mantém um mapa de detecções únicas.
-    Cada nova detecção é publicada em /detections_markers e registrada em disco.
+    Continuously subscribes to /camera, runs YOLO, and maintains a set of unique detections.
+    Each new detection is published on /detections_markers and logged to disk.
     """
 
     def __init__(self):
@@ -42,13 +42,13 @@ class MyRobotDetectionNode(Node):
             ('depth_topic', '/camera_depth'),
             ('base_frame', 'base_footprint'),
             ('map_topic', '/map'),
-            ('fx', 585.5),  # defaults para 640x480 e FOV ~57°
+            ('fx', 585.5),  # defaults for 640x480 and ~57° FOV
             ('fy', 585.5),
             ('cx', 319.5),
             ('cy', 239.5),
             ('fov_deg', 57.0),
             ('use_sim_time', False),
-            ('detection_tolerance', 1.0),  # metros
+            ('detection_tolerance', 1.0),  # meters
         ]
         for param_name, default_value in default_params:
             try:
@@ -88,18 +88,18 @@ class MyRobotDetectionNode(Node):
             OccupancyGrid, self.map_topic, self.map_callback, 10
         )
 
-        # TF buffer para mapear camera_link -> map
+        # TF buffer used to convert camera_link -> map
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
-        # Publisher para mapa de detecções
+        # Publisher for the detection map
         self.map_pub = self.create_publisher(MarkerArray, '/detections_markers', 10)
         self.map_timer = self.create_timer(2.0, self.publish_detection_map)
 
-        # Modelo YOLO
+        # YOLO model
         if YOLO is None:
             self.get_logger().error(
-                'Pacote ultralytics não disponível. Instale e tente novamente.'
+                'ultralytics package not available. Install it and try again.'
             )
             self.model = None
         else:
@@ -110,7 +110,7 @@ class MyRobotDetectionNode(Node):
                 self.get_logger().error(f'Falha ao carregar YOLO11n: {exc}')
                 self.model = None
 
-        # Diretório para armazenamento de detecções
+        # Directory used to persist detections
         self.package_root = self.resolve_package_root()
         self.detections_dir = self.package_root / 'detections'
         self.detections_dir.mkdir(parents=True, exist_ok=True)
@@ -121,10 +121,10 @@ class MyRobotDetectionNode(Node):
             self.det_counter = max_id + 1
             self.publish_detection_map()
 
-        self.get_logger().info('Detecção contínua inicializada em /camera.')
+        self.get_logger().info('Continuous detection initialized on /camera.')
 
     def image_callback(self, msg: Image):
-        # Calcula intrínsecos uma vez com base na resolução e fov se não vierem setados
+        # Compute intrinsics once based on resolution and FOV if they were not provided
         if not self.intrinsics_computed and msg.width > 0 and msg.height > 0:
             cx_calc = (msg.width - 1) * 0.5
             cy_calc = (msg.height - 1) * 0.5
@@ -141,7 +141,7 @@ class MyRobotDetectionNode(Node):
                 self.fy = fy_calc
             self.intrinsics_computed = True
             self.get_logger().info(
-                f'Intrinsecos definidos: fx={self.fx:.2f}, fy={self.fy:.2f}, '
+                f'Intrinsics defined: fx={self.fx:.2f}, fy={self.fy:.2f}, '
                 f'cx={self.cx:.2f}, cy={self.cy:.2f} (res {msg.width}x{msg.height}, fov {self.fov_deg:.2f}°)'
             )
         self.last_image = msg
@@ -160,12 +160,12 @@ class MyRobotDetectionNode(Node):
 
     def depth_callback(self, msg: Image):
         if msg.encoding.lower() not in ('32fc1', '32f'):
-            self.warn_once('depth_encoding', f'Encoding depth não suportado: {msg.encoding}')
+            self.warn_once('depth_encoding', f'Unsupported depth encoding: {msg.encoding}')
             return
         arr = np.frombuffer(msg.data, dtype=np.float32)
         expected = msg.width * msg.height
         if arr.size != expected:
-            self.warn_once('depth_size', f'Tamanho depth inesperado: {arr.size} vs {expected}')
+            self.warn_once('depth_size', f'Unexpected depth size: {arr.size} vs {expected}')
             return
         arr = arr.reshape((msg.height, msg.width))
         self.last_depth = (msg, arr)
@@ -176,7 +176,7 @@ class MyRobotDetectionNode(Node):
                 (msg.info.height, msg.info.width)
             )
         except Exception:
-            self.get_logger().warn('Mapa recebido com dimensões incompatíveis.')
+            self.get_logger().warn('Map received with incompatible dimensions.')
             return
         self.map_msg = msg
         self.map_np = np_data
@@ -190,7 +190,7 @@ class MyRobotDetectionNode(Node):
         msg = self.last_image
         depth_tuple = self.last_depth
         if depth_tuple is None:
-            self.get_logger().warn('Sem depth sincronizado para a detecção atual.')
+            self.get_logger().warn('No synchronized depth for the current detection.')
             return
         depth_msg, depth_arr = depth_tuple
 
@@ -198,7 +198,7 @@ class MyRobotDetectionNode(Node):
         expected = msg.width * msg.height * 3
         if img_np.size != expected:
             self.get_logger().warn(
-                f'Tamanho de imagem inesperado: {img_np.size} vs {expected}'
+                f'Unexpected image size: {img_np.size} vs {expected}'
             )
             return
         img_np = img_np.reshape((msg.height, msg.width, 3))
@@ -210,33 +210,33 @@ class MyRobotDetectionNode(Node):
         try:
             results = self.model.predict(img_rgb, verbose=False)
         except Exception as exc:
-            self.get_logger().error(f'Erro na inferência YOLO: {exc}')
+            self.get_logger().error(f'YOLO inference error: {exc}')
             return
 
         if not results or len(results) == 0:
-            self._report_no_detection('Nenhum resultado retornado pelo YOLO.')
+            self._report_no_detection('YOLO did not return any results.')
             return
 
         det = results[0]
         if det.boxes is None or len(det.boxes) == 0:
-            self._report_no_detection('Nenhum objeto detectado.')
+            self._report_no_detection('No objects detected.')
             return
         self._mark_detection_activity()
 
         if depth_msg.width != msg.width or depth_msg.height != msg.height:
             self.get_logger().warn(
-                'Depth e RGB com tamanhos diferentes; pulando estimativa de posição.'
+                'Depth and RGB dimensions differ; skipping pose estimation.'
             )
             return
 
-        # Usa intrínsecos; se não fornecidos, assume centro da imagem
+        # Use intrinsics; if absent assume image center
         cx = self.cx if self.cx > 0 else (msg.width - 1) * 0.5
         cy = self.cy if self.cy > 0 else (msg.height - 1) * 0.5
         if self.fx > 0 and self.fy > 0:
             fx = self.fx
             fy = self.fy
         else:
-            # calcula a partir do FOV e resolução (assumindo lente simétrica)
+            # Estimate from FOV and resolution (assuming symmetric lens)
             fov_rad = math.radians(self.fov_deg if self.fov_deg > 0 else 57.0)
             fx = float(msg.width) / (2.0 * math.tan(fov_rad * 0.5))
             fy = fx
@@ -248,7 +248,7 @@ class MyRobotDetectionNode(Node):
                 rclpy.time.Time(),
             )
         except TransformException as exc:
-            self.get_logger().warn(f'Nao consegui TF camera -> map: {exc}')
+            self.get_logger().warn(f'Could not get TF camera -> map: {exc}')
             return
 
         boxes = det.boxes.xyxy.cpu().numpy()
@@ -257,7 +257,7 @@ class MyRobotDetectionNode(Node):
         names = det.names if hasattr(det, 'names') else self.model.names
 
         if self.map_msg is None or self.map_np is None:
-            self.warn_once('missing_map', 'Mapa /map ainda não recebido; detecções serão ignoradas até então.')
+            self.warn_once('missing_map', '/map has not been received yet; detections will be ignored until then.')
             return
 
         map_updated = False
@@ -272,26 +272,26 @@ class MyRobotDetectionNode(Node):
             z = float(depth_arr[v, u])
             if z <= 0.0 or np.isnan(z) or np.isinf(z):
                 self.get_logger().info(
-                    f'Deteccao {i}: depth inválido em ({u},{v}) -> z={z:.3f}'
+                    f'Detection {i}: invalid depth at ({u},{v}) -> z={z:.3f}'
                 )
                 continue
 
-            # Direção do raio no frame da câmera (pinhole)
+            # Ray direction in the camera frame (pinhole)
             nx = (u - cx) / fx
             ny = (v - cy) / fy
             dir_cam = np.array([nx, ny, 1.0], dtype=float)
             norm = np.linalg.norm(dir_cam)
             if norm <= np.finfo(float).eps:
                 self.get_logger().info(
-                    f'Deteccao {i}: direcao de raio degenerada em ({u},{v})'
+                    f'Detection {i}: degenerate ray direction at ({u},{v})'
                 )
                 continue
             dir_cam /= norm
 
-            # Usa z como alcance ao longo do raio (distância câmera->ponto)
+            # Use z as the distance along the ray (camera-to-point)
             point_cam_3d = dir_cam * z
 
-            # Constrói PointStamped no frame da câmera
+            # Build PointStamped in the camera frame
             p_cam = PointStamped()
             p_cam.header.frame_id = msg.header.frame_id if msg.header.frame_id else 'camera_link'
             p_cam.header.stamp = msg.header.stamp
@@ -302,7 +302,7 @@ class MyRobotDetectionNode(Node):
             try:
                 p_map = do_transform_point(p_cam, tf_map_cam)
             except Exception as exc:
-                self.get_logger().warn(f'Falha ao transformar ponto camera->map: {exc}')
+                self.get_logger().warn(f'Failed to transform point camera->map: {exc}')
                 continue
 
             x_map = p_map.point.x
@@ -324,13 +324,13 @@ class MyRobotDetectionNode(Node):
                     self.replace_detection(idx, float(x_map), float(y_map), confidence, img_rgb, box)
                     map_updated = True
                 self.get_logger().info(
-                    f'Deteccao {existing["id"]} substituida: {label} nova conf={confidence:.2f}'
+                    f'Detection {existing["id"]} replaced: {label} new conf={confidence:.2f}'
                 )
                 continue
 
             if not self.is_position_mapped(x_map, y_map):
                 self.get_logger().debug(
-                    f'Deteccao ignorada em área não mapeada ({x_map:.2f},{y_map:.2f}).'
+                    f'Detection ignored in unmapped area ({x_map:.2f},{y_map:.2f}).'
                 )
                 continue
 
@@ -349,7 +349,7 @@ class MyRobotDetectionNode(Node):
             self.save_detection_assets(det_id, img_rgb, box, label)
             map_updated = True
             self.get_logger().info(
-                f'Nova deteccao {det_id}: {label} em (x={x_map:.2f}, y={y_map:.2f}) conf={confidence:.2f}'
+                f'New detection {det_id}: {label} at (x={x_map:.2f}, y={y_map:.2f}) conf={confidence:.2f}'
             )
 
         if map_updated:
@@ -366,7 +366,7 @@ class MyRobotDetectionNode(Node):
         try:
             import imageio.v2 as iio  # type: ignore
 
-            iio.imwrite(path, img_bgr[:, :, ::-1])  # imageio espera RGB
+            iio.imwrite(path, img_bgr[:, :, ::-1])  # imageio expects RGB
             return True
         except Exception:
             return False
@@ -512,7 +512,7 @@ class MyRobotDetectionNode(Node):
                 should_log = delta.nanoseconds >= self.map_log_interval.nanoseconds
             if should_log:
                 self.get_logger().info(
-                    f'/detections_markers publicado com {len(self.detection_records)} detecções.'
+                    f'/detections_markers published with {len(self.detection_records)} detections.'
                 )
                 self.last_map_log_time = now
 
@@ -560,7 +560,7 @@ class MyRobotDetectionNode(Node):
             with self.detections_file.open('w', encoding='utf-8') as fp:
                 json.dump(data, fp, indent=2)
         except Exception as exc:
-            self.get_logger().error(f'Falha ao salvar detections.json: {exc}')
+            self.get_logger().error(f'Failed to save detections.json: {exc}')
 
     def load_existing_detections(self) -> List[Dict[str, Any]]:
         if not self.detections_file.exists():
@@ -569,7 +569,7 @@ class MyRobotDetectionNode(Node):
             with self.detections_file.open('r', encoding='utf-8') as fp:
                 data = json.load(fp)
         except Exception as exc:
-            self.get_logger().warn(f'Nao foi possível carregar detections.json: {exc}')
+            self.get_logger().warn(f'Unable to load detections.json: {exc}')
             return []
         loaded: List[Dict[str, Any]] = []
         for entry in data:

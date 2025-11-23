@@ -20,23 +20,23 @@ class CoppeliaLaserPublisher(Node):
         except ParameterAlreadyDeclaredException:
             pass
 
-        # Publicador LaserScan
+        # LaserScan publisher
         self.pub = self.create_publisher(LaserScan, '/scan', 10)
 
-        # Conexão com CoppeliaSim
+        # Connection to CoppeliaSim
         self.client = RemoteAPIClient()  # host=localhost port=23000
         self.sim = self.client.require('sim')
 
-        # Parâmetros do scan
+        # Laser parameters
         self.angle_min = -math.pi
         self.angle_max = math.pi
         self.range_min = 0.05
         self.range_max = 10.0
 
-        # Timer para atualizar LaserScan
+        # Timer that publishes the scan
         self.timer = self.create_timer(0.05, self.timer_callback)
 
-        self.get_logger().info('CoppeliaLaserPublisher iniciado.')
+        self.get_logger().info('CoppeliaLaserPublisher started.')
 
     def timer_callback(self):
         buf = self.sim.getBufferProperty(
@@ -44,7 +44,7 @@ class CoppeliaLaserPublisher(Node):
             'signal.myRobot_scan',
             {'noError': True},
         )
-        # getBufferProperty retorna bytes; se não existir, costuma vir b'' ou None
+        # getBufferProperty returns bytes; missing signals show up as b'' or None
 
         if not buf:
             return

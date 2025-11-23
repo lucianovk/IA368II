@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Converte detecções de objetos em segmentos semânticos de salas.
-Lê /detections_markers (MarkerArray), associa labels aos cômodos definidos
-em semantic_room_seg_classes.json e colore /topologic_map com o cômodo estimado,
-publicando o resultado como OccupancyGrid em /semantic_map.
+Convert object detections into semantic room segments.
+Reads /detections_markers (MarkerArray), associates labels to the rooms defined
+in semantic_room_seg_classes.json, and colors /topologic_map with the estimated room,
+publishing the result as an OccupancyGrid on /semantic_map.
 """
 
 from pathlib import Path
@@ -41,16 +41,16 @@ class SemanticRoomSegmentationNode(Node):
             fallback = self._resolve_semantic_file()
             if fallback is not None:
                 self.get_logger().warn(
-                    f'{semantic_map_path} não encontrado; usando {fallback} como fallback.'
+                    f'{semantic_map_path} not found; using {fallback} as a fallback.'
                 )
                 semantic_map_path = fallback
             else:
                 self.get_logger().warn(
-                    f'{semantic_map_path} não encontrado e nenhum fallback disponível.'
+                    f'{semantic_map_path} not found and no fallback available.'
                 )
         self.label_to_room = self._load_semantic_classes(semantic_map_path)
         self.get_logger().info(
-            f'{len(self.label_to_room)} labels semânticos carregados de {semantic_map_path}'
+            f'{len(self.label_to_room)} semantic labels loaded from {semantic_map_path}'
         )
 
         self.room_map_topic = self.get_parameter('room_map_topic').value
@@ -74,30 +74,33 @@ class SemanticRoomSegmentationNode(Node):
         self.labels_pub = self.create_publisher(MarkerArray, '/semantic_map_labels_markers', 10)
 
     def _load_semantic_classes(self, path: Path) -> Dict[str, str]:
+        """Read the label->room mapping JSON and normalize labels."""
         if not path.exists():
-            self.get_logger().warn(f'Arquivo {path} não encontrado; mapa semântico vazio.')
+            self.get_logger().warn(f'File {path} not found; semantic map empty.')
             return {}
         try:
             with path.open('r', encoding='utf-8') as fp:
                 data = json.load(fp)
         except Exception as exc:
-            self.get_logger().error(f'Falha ao carregar {path}: {exc}')
+            self.get_logger().error(f'Failed to load {path}: {exc}')
             return {}
         mapping = {k.strip().lower(): v for k, v in data.items()}
         return mapping
 
     def _room_map_cb(self, msg: OccupancyGrid) -> None:
+        """Cache the most recent region map and mark semantic map for rebuild."""
         self.room_map_msg = msg
         np_data = np.array(msg.data, dtype=np.int16).reshape(
             (msg.info.height, msg.info.width)
         )
         self.room_map_np = np_data
         self.get_logger().info(
-            f'/topologic_map atualizado ({msg.info.width}x{msg.info.height}). Recalculando mapa semântico.'
+            f'/topologic_map updated ({msg.info.width}x{msg.info.height}). Rebuilding semantic map.'
         )
         self.semantic_dirty = True
 
     def _detections_cb(self, msg: MarkerArray) -> None:
+        """Associate incoming labels with rooms using the last known static map."""
         if self.room_map_msg is None or self.room_map_np is None:
             return
         updated = False
@@ -119,7 +122,7 @@ class SemanticRoomSegmentationNode(Node):
             ):
                 self.latest_assignments[room_id] = room_name
                 self.get_logger().info(
-                    f'Deteccao atribuída: room_id={room_id} -> {room_name}'
+                    f'Detection assigned: room_id={room_id} -> {room_name}'
                 )
                 updated = True
 
@@ -127,6 +130,7 @@ class SemanticRoomSegmentationNode(Node):
             self.semantic_dirty = True
 
     def _publish_semantic_map(self) -> None:
+        """Convert the last assignments into an OccupancyGrid and publish it."""
         if not self.semantic_dirty:
             return
         if (
@@ -136,6 +140,7 @@ class SemanticRoomSegmentationNode(Node):
         ):
             return
 
+        # Default to -1 so we keep track of cells that never received any semantic label.
         semantic_grid = np.full_like(self.room_map_np, fill_value=-1, dtype=np.int16)
         room_name_to_value: Dict[str, int] = {}
         room_name_to_ids: Dict[str, list[int]] = {}
@@ -150,6 +155,8 @@ class SemanticRoomSegmentationNode(Node):
             semantic_value = room_name_to_value[room_name]
             semantic_grid[mask] = semantic_value
 
+        # Preserve walls/obstacles and free cells without labels so downstream consumers
+        # can still reason about traversability.
         semantic_grid[self.room_map_np == 100] = 100
         semantic_grid[(self.room_map_np == 0) & (semantic_grid == -1)] = 0
 
@@ -160,13 +167,14 @@ class SemanticRoomSegmentationNode(Node):
         self.semantic_pub.publish(out_msg)
         self._publish_labels(room_name_to_value, room_name_to_ids)
         self.get_logger().info(
-            f'/semantic_map publicado com {len(room_name_to_value)} classes.'
+            f'/semantic_map published with {len(room_name_to_value)} classes.'
         )
         self.semantic_dirty = False
 
     def _publish_labels(
         self, room_values: Dict[str, int], room_ids: Dict[str, list[int]]
     ) -> None:
+        """Publish one text marker per semantic room so the GUI shows names."""
         ma = MarkerArray()
         stamp = self.get_clock().now().to_msg()
         for room_name, value in room_values.items():
@@ -207,12 +215,13 @@ class SemanticRoomSegmentationNode(Node):
         if ma.markers:
             self.labels_pub.publish(ma)
             self.get_logger().info(
-                f'/semantic_map_labels_markers publicado com {len(ma.markers)} marcadores.'
+                f'/semantic_map_labels_markers published with {len(ma.markers)} markers.'
             )
         else:
-            self.get_logger().info('/semantic_map_labels_markers não teve marcadores para publicar.')
+            self.get_logger().info('/semantic_map_labels_markers had no markers to publish.')
 
     def _lookup_room_id(self, pose: Pose) -> Optional[int]:
+        """Convert a pose in map coordinates to the discrete room/region id."""
         info = self.room_map_msg.info  # type: ignore
         origin = info.origin.position
         res = info.resolution
@@ -225,6 +234,7 @@ class SemanticRoomSegmentationNode(Node):
         return int(self.room_map_np[my, mx])  # type: ignore
 
     def _semantic_value(self, room_name: str) -> int:
+        """Assign pseudo-color map values spaced apart to separate room IDs."""
         if room_name not in self.room_value_map:
             base = 30
             step = 20
@@ -234,6 +244,7 @@ class SemanticRoomSegmentationNode(Node):
         return self.room_value_map[room_name]
 
     def _resolve_semantic_file(self) -> Optional[Path]:
+        """Try to locate the semantic class file in common workspaces/install spaces."""
         current = Path(__file__).resolve()
         rel_path = Path('config') / 'semantic_room_seg_classes.json'
         for ancestor in current.parents:
