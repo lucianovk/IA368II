@@ -3,10 +3,11 @@ import math
 from typing import Optional, Tuple
 
 import rclpy
-from geometry_msgs.msg import Quaternion
+from geometry_msgs.msg import Quaternion, TransformStamped
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rclpy.time import Time
+from tf2_ros import TransformBroadcaster
 
 from coppeliasim_zmqremoteapi_client import RemoteAPIClient
 
@@ -22,7 +23,8 @@ class CoppeliaOdometryPublisher(Node):
     def __init__(self):
         super().__init__('my_robot_odometry_node')
 
-        self.pub = self.create_publisher(Odometry, '/myRobot/odometry', 10)
+        self.pub = self.create_publisher(Odometry, '/odom', 10)
+        self.tf_broadcaster = TransformBroadcaster(self)
 
         self.client = RemoteAPIClient()
         self.sim = self.client.require('sim')
@@ -56,7 +58,7 @@ class CoppeliaOdometryPublisher(Node):
         msg = Odometry()
         msg.header.stamp = now.to_msg()
         msg.header.frame_id = 'odom'
-        msg.child_frame_id = 'footprint_link'
+        msg.child_frame_id = 'base_footprint'
 
         msg.pose.pose.position.x = x
         msg.pose.pose.position.y = y
@@ -79,6 +81,17 @@ class CoppeliaOdometryPublisher(Node):
         self.last_stamp = now
 
         self.pub.publish(msg)
+
+        # Broadcast TF odom -> base_footprint
+        t = TransformStamped()
+        t.header.stamp = msg.header.stamp
+        t.header.frame_id = 'odom'
+        t.child_frame_id = 'base_footprint'
+        t.transform.translation.x = x
+        t.transform.translation.y = y
+        t.transform.translation.z = 0.0
+        t.transform.rotation = msg.pose.pose.orientation
+        self.tf_broadcaster.sendTransform(t)
 
 
 def main(args=None):

@@ -5,5 +5,5 @@ rf2o_laser_odometry:
     publish_tf: true
     base_frame_id: base_footprint
     odom_frame_id: odom
-    init_pose_from_topic: '/myRobot/odometry'
+    init_pose_from_topic: ''
     freq: 20.0

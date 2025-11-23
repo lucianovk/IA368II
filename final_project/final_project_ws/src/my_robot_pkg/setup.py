@@ -20,6 +20,9 @@ setup(
         'setuptools',
         'coppeliasim-zmqremoteapi-client',
         'numpy',
+        'tf-transformations',
+        'scipy',
+        'opencv-python',
     ],
     zip_safe=True,
     maintainer='adrolab',
@@ -34,7 +37,12 @@ setup(
             'my_robot_sim_control_node = my_robot.my_robot_sim_control_node:main',
             'my_robot_cmd_vel_node = my_robot.my_robot_cmd_vel_node:main',
             'my_robot_keyboard_node = my_robot.my_robot_keyboard_node:main',
-            'my_robot_explore_node = my_robot.explore_frontier_node:main',
+            'my_robot_explorer_node = my_robot.my_robot_explorer_node:main',
+            'my_robot_explorer_node_2 = my_robot.my_robot_explorer_node_2:main',
+            'my_robot_vision_node = my_robot.my_robot_vision_node:main',
+            'my_robot_yolo_key_node = my_robot.my_robot_yolo_key_node:main',
+            'my_robot_room_segmentation_node = my_robot.my_robot_room_segmentation_node:main',
+            
         ],
     },
 )

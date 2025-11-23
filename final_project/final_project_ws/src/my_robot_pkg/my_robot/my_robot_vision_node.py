@@ -27,6 +27,27 @@ class CoppeliaVisionPublisher(Node):
         self.client = RemoteAPIClient()
         self.sim = self.client.require('sim')
         self.vision_handle = self.sim.getObject('/myRobot/visionSensor')
+        # Planos de corte obtidos diretamente do sensor
+        try:
+            self.near_clip = self.sim.getObjectFloatParam(
+                self.vision_handle, self.sim.visionfloatparam_near_clipping
+            )
+            self.far_clip = self.sim.getObjectFloatParam(
+                self.vision_handle, self.sim.visionfloatparam_far_clipping
+            )
+            fov_rad = self.sim.getObjectFloatParam(
+                self.vision_handle, self.sim.visionfloatparam_perspective_angle
+            )
+            self.fov_deg = math.degrees(fov_rad)
+            self.get_logger().info(f'FOV do sensor: {self.fov_deg:.2f} graus')
+            self.get_logger().info(
+                f'Clipping do sensor: near={self.near_clip:.3f} m, far={self.far_clip:.3f} m'
+            )
+        except Exception as exc:
+            self.get_logger().warn(f'Falha ao obter clipping/FOV do sensor: {exc}')
+            self.near_clip = 0.2
+            self.far_clip = 3.5
+            self.fov_deg = 57.0
 
         # Static TF camera_link 0.12 m acima de base_link
         self.static_tf_broadcaster = StaticTransformBroadcaster(self)
@@ -37,12 +58,11 @@ class CoppeliaVisionPublisher(Node):
         static_t.transform.translation.x = 0.0
         static_t.transform.translation.y = 0.0
         static_t.transform.translation.z = 0.12
-        # Rotaciona 15 graus para cima (pitch) com eixo Y
-        pitch = -0.261799  # -15 deg em rad
+        # Orientação: alinhada com eixo X, sem inclinação
         static_t.transform.rotation.x = 0.0
-        static_t.transform.rotation.y = math.sin(pitch * 0.5)
+        static_t.transform.rotation.y = 0.70710678118
         static_t.transform.rotation.z = 0.0
-        static_t.transform.rotation.w = math.cos(pitch * 0.5)
+        static_t.transform.rotation.w = 0.70710678118
         self.static_tf_broadcaster.sendTransform(static_t)
 
         # 10 Hz
@@ -51,6 +71,13 @@ class CoppeliaVisionPublisher(Node):
         self.first_frame_logged = False
 
     def timer_callback(self):
+        try:
+            # Garante que o sensor é processado antes de ler imagem/depth
+            self.sim.handleVisionSensor(self.vision_handle)
+        except Exception as exc:
+            self.get_logger().warn(f'Falha ao processar vision sensor: {exc}')
+            return
+
         try:
             raw = self.sim.getVisionSensorCharImage(self.vision_handle)
         except Exception as exc:  # pragma: no cover - melhor logar que travar
@@ -162,6 +189,17 @@ class CoppeliaVisionPublisher(Node):
             return
 
         depth_arr = depth_arr.reshape((d_height, d_width))
+
+        # Converte depth normalizado (0..1) para metros usando near/far do sensor
+        try:
+            near = self.near_clip
+            far = self.far_clip
+            depth_arr = near + depth_arr * (far - near)
+        except Exception as exc:
+            self.get_logger().warn(f'Falha ao converter depth para metros: {exc}')
+
+        # Garante mesma orientação horizontal aplicada na imagem RGB
+        depth_arr = np.fliplr(depth_arr)
 
         depth_msg = Image()
         depth_msg.header.stamp = msg.header.stamp  # usar mesmo timestamp da RGB
