@@ -1,6 +1,8 @@
 # Vacuum Cleaner Robot Simulation (CoppeliaSim + Python) 
 
-![Spiral Coverage](myrobot-bg.png)
+<p align="center">
+  <img src="myrobot-bg.png" alt="myRobot" />
+</p>
 
 This repository contains three Python scripts for simulating a **vacuum cleaner robot** in **CoppeliaSim**.  
 All scripts support **manual or autonomous navigation** patterns commonly found in household robots and include odometry-based updates.
