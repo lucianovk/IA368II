@@ -25,6 +25,13 @@ Additional tools:
 - RViz configuration ([`my_robot.rviz`](./final_project_ws/src/my_robot_pkg/rviz/my_robot.rviz)) for monitoring detections, topologic segments, and semantic labels.
 - Scene descriptions in [`scenes/`](./scenes/) for CoppeliaSim or RViz playback.
 
+**Node deep dives**  
+For implementation notes and extended explanations see:
+- [Cartographer / exploration node](./cartograher_node.md)
+- [Explorer control loop](./explorer_node.md)
+- [Topologic segmentation node](./topologic_segmentation_node.md)
+- [Semantic segmentation node](./semantic_segmentation_node.md)
+
 ## 3. Semantic Pipeline
 
 1. **Occupancy & Room Segmentation**  
