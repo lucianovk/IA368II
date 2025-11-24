@@ -1,8 +1,16 @@
+"""
+Localization bringup: starts the simulated sensors, RF2O odometry, semantic stack,
+and a delayed slam_toolbox instance for pose-graph localization.
+"""
+
+from pathlib import Path
+
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, TimerAction
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, TextSubstitution
 from launch_ros.actions import Node
+from nav2_common.launch import RewrittenYaml
 from launch_ros.substitutions import FindPackageShare
 
 
@@ -36,6 +44,38 @@ def generate_launch_description():
             'slam_loc_params.yaml',
         ]
     )
+    def _resolve_pose_graph_base():
+        src_pkg_dir = None
+        current_dir = Path(__file__).resolve().parent
+        for ancestor in current_dir.parents:
+            candidate = ancestor / 'src' / 'my_robot_pkg'
+            if candidate.exists():
+                src_pkg_dir = candidate
+                break
+
+        if src_pkg_dir:
+            pose_graphs_dir = src_pkg_dir / 'pose_graphs'
+            pose_graphs_dir.mkdir(parents=True, exist_ok=True)
+            base = pose_graphs_dir / 'my_robot_pose_graph'
+            return TextSubstitution(text=str(base))
+        fallback = PathJoinSubstitution(
+            [
+                FindPackageShare('my_robot_pkg'),
+                'pose_graphs',
+                'my_robot_pose_graph',
+            ]
+        )
+        fallback_dir = Path(__file__).resolve().parent / 'pose_graphs'
+        fallback_dir.mkdir(parents=True, exist_ok=True)
+        return fallback
+
+    pose_graph_path = _resolve_pose_graph_base()
+    slam_params_with_posegraph = RewrittenYaml(
+        source_file=slam_params_file,
+        root_key='slam_toolbox',
+        param_rewrites={'map_file_name': pose_graph_path},
+        convert_types=True,
+    )
     log_args = ['--ros-args', '--log-level', 'warn']
 
     return LaunchDescription(
@@ -44,6 +84,7 @@ def generate_launch_description():
             declare_use_sim_time,
             # The robot publishes odometry in base_link, so we hand out static transforms
             # upfront to guarantee TF consumers have a sane tree before sensors start.
+            # Bridge TF from base_footprint up to laser_link to match the simulated kinematics
             Node(
                 package='tf2_ros',
                 executable='static_transform_publisher',
@@ -193,7 +234,7 @@ def generate_launch_description():
                             )
                         ),
                         launch_arguments={
-                            'slam_params_file': slam_params_file,
+                            'slam_params_file': slam_params_with_posegraph,
                             'use_sim_time': use_sim_time,
                         }.items(),
                     )
