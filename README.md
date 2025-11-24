@@ -9,8 +9,7 @@ All scripts support **manual or autonomous navigation** patterns commonly found 
 2. **Pure reactive obstacle avoidance** (randomized turns) — [Read more](sim-2-obstacle-avoidance.md)
 3. **Systematic area coverage using spiral waypoints** — [Read more](sim-3-spiral-coverage.md)
 4. **ROS 2 Bumper Test** — [Read more](test-bumper/ROS2-bumper-test.md)
-5. **Autonomous Docking** — [Read more](autodocking/autodocking.md)
+5. **Autonomous Docking** — [Read more](autodocking/README.md)
 6. **ROS2 Autonomous Docking** — [Read more](ros2-autodocking/ros2-autodocking.md)
-7. **ROS 2 Bringup Example** — [Read more](myrobot_bringup_ws/src/myrobot_bringup/my-robot-brungup.md)
-8. **Semantic Room Segmentation Final Project** — [Read more](final_project/final-project.md)
-
+7. **ROS 2 Bringup Example** — [Read more](myrobot_bringup_ws/README.md)
+8. **Semantic Room Segmentation Final Project** — [Read more](final_project/README.md)
