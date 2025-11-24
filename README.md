@@ -1,7 +1,7 @@
 # Vacuum Cleaner Robot Simulation (CoppeliaSim + Python) 
 
 <p align="center">
-  <img src="myrobot-bg.png" alt="myRobot" />
+  <img src="myrobot-mv-bg.png" alt="myRobot" />
 </p>
 
 This repository contains three Python scripts for simulating a **vacuum cleaner robot** in **CoppeliaSim**.  
