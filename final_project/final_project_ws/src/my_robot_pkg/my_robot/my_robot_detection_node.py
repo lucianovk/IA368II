@@ -104,10 +104,10 @@ class MyRobotDetectionNode(Node):
             self.model = None
         else:
             try:
-                self.model = YOLO('/dados/pessoal/sandbox/IA368II/github_lvk/final_project/final_project_ws/models/yolo11n.pt')
-                self.get_logger().info('Modelo YOLO11n carregado de models/yolo11n.pt.')
+                self.model = YOLO(str(Path(__file__).resolve().parents[2] / 'models' / 'yolo11n.pt'))
+                self.get_logger().info('YOLO11n model loaded from models/yolo11n.pt.')
             except Exception as exc:
-                self.get_logger().error(f'Falha ao carregar YOLO11n: {exc}')
+                self.get_logger().error(f'Failed to load YOLO11n: {exc}')
                 self.model = None
 
         # Directory used to persist detections

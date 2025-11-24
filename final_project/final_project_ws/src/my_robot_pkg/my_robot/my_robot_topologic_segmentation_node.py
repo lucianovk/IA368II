@@ -1,4 +1,15 @@
 #!/usr/bin/env python3
+"""
+Topologic segmentation node for CoppeliaSim/ROS:
+- Repairs thin wall gaps so rooms stay watertight.
+- Computes a distance-based potential field, extracts peaks, and runs watershed/Voronoi segmentation.
+- Publishes `/topologic_map` plus optional debug overlays for semantic modules downstream.
+- Tunable knobs via ROS params:
+    * `min_room_area_m2`: higher values merge closets into neighbors; lower values keep tiny rooms separate.
+    * `wall_fix_kernel_size`: higher values fill wider gaps (risk of overfilling); lower values preserve narrow doors.
+    * `potential_blur_sigma`: higher values smooth peaks for fewer, larger rooms; lower values sharpen peaks for more rooms.
+    * `min_room_distance_px`: higher values enforce spaced seeds for coarser segmentation; lower values allow dense seeds for finer segmentation.
+"""
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy
@@ -13,14 +24,14 @@ import yaml
 import argparse
 from geometry_msgs.msg import Pose, Point, Quaternion
 
-class VoronoiSegmentationNode(Node):
+class TopologicSegmentationNode(Node):
     """
     Watershed segmentation + wall repair + fusion of small rooms.
     Supports running via ROS (topics) or offline via static files.
     """
 
     def __init__(self, offline_config=None):
-        super().__init__('voronoi_segmentation_node')
+        super().__init__('topologic_segmentation_node')
 
         # --- CONFIGURATION (Hybrid: ROS parameters or manual config) ---
         self.offline_mode = offline_config is not None
@@ -50,7 +61,7 @@ class VoronoiSegmentationNode(Node):
             self.room_pub = self.create_publisher(OccupancyGrid, '/topologic_map', map_qos)
             self.debug_walls_pub = self.create_publisher(OccupancyGrid, '/debug/repaired_walls', map_qos)
             self.timer = self.create_timer(2.0, self._processing_loop)
-            self.get_logger().info('Watershed Segmentation Node Ready.')
+            self.get_logger().info('Topologic Segmentation Node Ready.')
 
         self._current_map = None
         self._lock = threading.Lock()
@@ -121,16 +132,20 @@ class VoronoiSegmentationNode(Node):
         # Use the parameters stored on self
         grid = np.array(map_msg.data, dtype=np.int8).reshape((h, w))
 
-        # 1. Repair
+        # Step 1: Repair the free-space mask so walls are watertight
         free_space_mask = self._repair_walls(grid, h, w)
         if not self.offline_mode:
              self._publish_debug(self.debug_walls_pub, (free_space_mask == 0).astype(np.uint8)*100, map_msg)
 
-        # 2. Potential field
+        # Step 2: Build a smoothed potential field to seed room centers
         dist_map = cv2.distanceTransform(free_space_mask, cv2.DIST_L2, 5)
-        potential_field = cv2.GaussianBlur(dist_map, (0, 0), sigmaX=self.p_blur_sigma, sigmaY=self.p_blur_sigma)
+        
+        # Step 3: Blur the distance transform so seed peaks form in the center of wide spaces (avoid false peaks due to furniture)
+        potential_field = cv2.GaussianBlur(
+            dist_map, (0, 0), sigmaX=self.p_blur_sigma, sigmaY=self.p_blur_sigma
+        )
 
-        # 3. Peaks
+        # Step 4: Extract local maxima that will become watershed seeds
         local_maxima = peak_local_max(
             potential_field, 
             min_distance=int(self.p_min_dist),
@@ -149,17 +164,17 @@ class VoronoiSegmentationNode(Node):
             self.get_logger().warn("No rooms detected.")
             return None
 
-        # 4. Watershed
+        # Step 5: Flood the potential field via watershed to assign room IDs
         base_img = cv2.cvtColor(free_space_mask, cv2.COLOR_GRAY2BGR)
         markers_final = markers.copy()
         markers_final[free_space_mask == 0] = -1
         cv2.watershed(base_img, markers_final)
 
-        # 5. Merge
+        # Step 6: Merge or drop tiny regions so only meaningful rooms remain
         min_pixels = int(self.p_min_area / (res * res))
         markers_final = self._merge_small_rooms(markers_final, min_pixels)
 
-        # 6. Output
+        # Step 7: Emit an OccupancyGrid that encodes both rooms and obstacles
         final_grid = np.full_like(grid, -1, dtype=np.int8)
         room_area = (markers_final > 0) & (free_space_mask == 255)
         
@@ -270,13 +285,13 @@ def save_colored_map(occupancy_msg, output_path):
     mask_obstacle = (data == 100)
     mask_rooms = (data >= 0) & (data != 100)
 
-    # 1. Paint unknown cells light gray
+    # Paint unknown cells light gray
     visual_img[mask_unknown] = [200, 200, 200]
     
-    # 2. Paint obstacles black
+    # Paint obstacles black
     visual_img[mask_obstacle] = [0, 0, 0]
 
-    # 3. Color the rooms
+    # Color the rooms
     if np.any(mask_rooms):
         room_vals = data[mask_rooms]
         
@@ -310,28 +325,28 @@ def main(args=None):
         print(f"Loading map: {known_args.map}")
         
         try:
-            # 1. Load map
+            # Step 1: Load the YAML map and convert it to OccupancyGrid
             map_msg = load_map_from_yaml(known_args.map)
             
-            # 2. Initialize ROS (minimally, to allow creating the Node)
+            # Step 2: Initialize ROS (minimally, to allow creating the Node)
             rclpy.init(args=unknown_args)
             
             # Manual configuration (tweak as needed)
             config = {
-                'min_room_area_m2': 3.0,
-                'wall_fix_kernel_size': 3,
-                'potential_blur_sigma': 2.0,
-                'min_room_distance_px': 15
+                'min_room_area_m2': 3.0,   # drop rooms smaller than ~3 m²
+                'wall_fix_kernel_size': 3, # convolution kernel used to close wall gaps
+                'potential_blur_sigma': 2.0, # Gaussian blur applied to the distance transform
+                'min_room_distance_px': 15  # minimum pixel spacing between seed peaks
             }
             
-            node = VoronoiSegmentationNode(offline_config=config)
+            node = TopologicSegmentationNode(offline_config=config)
             
-            # 3. Process
+            # Step 3: Run the segmentation pipeline
             print("Running segmentation...")
             segmented_msg = node.process_segmentation(map_msg)
             
             if segmented_msg:
-                # 4. Save
+                # Step 4: Save the colored output for inspection
                 save_colored_map(segmented_msg, known_args.output)
             else:
                 print("Error: segmentation did not return any result.")
@@ -346,7 +361,7 @@ def main(args=None):
     else:
         # --- ONLINE MODE (ROS NODE) ---
         rclpy.init(args=args)
-        node = VoronoiSegmentationNode()
+        node = TopologicSegmentationNode()
         try:
             rclpy.spin(node)
         except KeyboardInterrupt:

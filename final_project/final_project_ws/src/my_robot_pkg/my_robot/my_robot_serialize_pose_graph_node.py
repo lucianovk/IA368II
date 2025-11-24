@@ -17,6 +17,7 @@ from slam_toolbox.srv import SerializePoseGraph
 class PoseGraphSerializerNode(Node):
     def __init__(self) -> None:
         super().__init__('my_robot_serialize_pose_graph_node')
+        # All parameters are optional, but expose them so launch files can override them.
         self.declare_parameter('service_name', '/slam_toolbox/serialize_map')
         self.declare_parameter('output_directory', 'pose_graphs')
         self.declare_parameter('interval_seconds', 60.0)
@@ -44,6 +45,7 @@ class PoseGraphSerializerNode(Node):
         )
 
     def trigger_serialization(self) -> None:
+        """Kick off a serialization request if one is not already running."""
         if self.pending_future is not None and not self.pending_future.done():
             return
         if not self.client.wait_for_service(timeout_sec=0.0):
@@ -57,6 +59,7 @@ class PoseGraphSerializerNode(Node):
         self.pending_future.add_done_callback(self._handle_response)
 
     def _handle_response(self, future: Future) -> None:
+        """Log the service outcome and allow future requests to proceed."""
         try:
             response = future.result()
         except Exception as exc:  # pragma: no cover
@@ -72,12 +75,14 @@ class PoseGraphSerializerNode(Node):
         self.pending_future = None
 
     def _initial_serialization_check(self) -> None:
+        """Run a one-shot serialization as soon as the service is ready."""
         if self.pending_future is None:
             if self.client.wait_for_service(timeout_sec=0.0):
                 self.trigger_serialization()
                 self.initial_timer.cancel()
 
     def resolve_package_root(self) -> Path:
+        """Best-effort search for the package root, both in source and install spaces."""
         current = Path(__file__).resolve()
         for ancestor in current.parents:
             direct = ancestor / 'src' / 'my_robot_pkg'

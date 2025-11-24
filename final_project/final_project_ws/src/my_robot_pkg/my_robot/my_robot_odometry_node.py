@@ -36,9 +36,10 @@ class CoppeliaOdometryPublisher(Node):
 
         self.timer = self.create_timer(0.05, self.timer_callback)
 
-        self.get_logger().info('CoppeliaOdometryPublisher conectado ao CoppeliaSim.')
+        self.get_logger().info('CoppeliaOdometryPublisher connected to CoppeliaSim.')
 
     def timer_callback(self):
+        """Poll the simulator buffer, publish odometry, and broadcast the TF frame."""
         buf = self.sim.getBufferProperty(
             self.robot_handle,
             'customData.Odometry',
@@ -68,6 +69,7 @@ class CoppeliaOdometryPublisher(Node):
         if self.last_pose and self.last_stamp:
             dt = (now - self.last_stamp).nanoseconds * 1e-9
             if dt > 0.0:
+                # Estimate linear/angular velocity from pose deltas
                 dx = x - self.last_pose[0]
                 dy = y - self.last_pose[1]
                 dtheta = theta - self.last_pose[2]
@@ -82,7 +84,7 @@ class CoppeliaOdometryPublisher(Node):
 
         self.pub.publish(msg)
 
-        # Broadcast TF odom -> base_footprint
+        # Broadcast odom -> base_footprint so the rest of the stack can consume TF
         t = TransformStamped()
         t.header.stamp = msg.header.stamp
         t.header.frame_id = 'my_robot_odom'

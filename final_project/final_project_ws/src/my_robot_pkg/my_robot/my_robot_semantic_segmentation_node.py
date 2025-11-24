@@ -22,16 +22,14 @@ class SemanticRoomSegmentationNode(Node):
     def __init__(self) -> None:
         super().__init__('my_robot_semantic_segmentation_node')
 
-        self.declare_parameter(
-            'semantic_map_file',
-            str(
-                Path(__file__)
-                .resolve()
-                .parent.parent
+        default_semantic_path = self._resolve_semantic_file()
+        if default_semantic_path is None:
+            default_semantic_path = (
+                Path(__file__).resolve().parent.parent
                 / 'config'
                 / 'semantic_room_seg_classes.json'
-            ),
-        )
+            )
+        self.declare_parameter('semantic_map_file', str(default_semantic_path))
         self.declare_parameter('room_map_topic', '/topologic_map')
         self.declare_parameter('detections_topic', '/detections_markers')
         self.declare_parameter('semantic_map_topic', '/semantic_map')

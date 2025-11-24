@@ -1,3 +1,8 @@
+"""
+Thin wrapper around slam_toolbox's async launch that wires in our params file,
+auto-start behavior, and log-level detection to keep mapping/localization tidy.
+"""
+
 import os
 from typing import List
 

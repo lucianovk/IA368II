@@ -236,6 +236,7 @@ def generate_launch_description():
                         launch_arguments={
                             'slam_params_file': slam_params_with_posegraph,
                             'use_sim_time': use_sim_time,
+                            'log_level': 'warn',
                         }.items(),
                     )
                 ],

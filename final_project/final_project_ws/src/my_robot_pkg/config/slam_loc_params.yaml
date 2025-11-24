@@ -18,7 +18,7 @@ slam_toolbox:
     use_map_saver: true
     #mode: mapping
     mode: localization
-    map_file_name: /dados/pessoal/sandbox/IA368II/github_lvk/final_project/final_project_ws/src/my_robot_pkg/pose_graphs/my_robot_pose_graph 
+    map_file_name: pose_graphs/my_robot_pose_graph  # resolved to an absolute path by the launch file
 
     # if you'd like to immediately start continuing a map at a given pose
     # or at the dock, but they are mutually exclusive, if pose is given

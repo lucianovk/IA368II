@@ -33,18 +33,19 @@ class CoppeliaLaserPublisher(Node):
         self.range_min = 0.05
         self.range_max = 10.0
 
-        # Timer that publishes the scan
+        # Clocked publisher loop so the scan topic stays in sync with /clock
         self.timer = self.create_timer(0.05, self.timer_callback)
 
         self.get_logger().info('CoppeliaLaserPublisher started.')
 
     def timer_callback(self):
+        """Fetch the latest scan from CoppeliaSim and republish it as LaserScan."""
         buf = self.sim.getBufferProperty(
             self.sim.handle_scene,
             'signal.myRobot_scan',
             {'noError': True},
         )
-        # getBufferProperty returns bytes; missing signals show up as b'' or None
+        # Missing signals show up as empty bytes, so bail out early when that happens.
 
         if not buf:
             return

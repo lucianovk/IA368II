@@ -15,16 +15,15 @@ Key ideas:
 
 | Block | Description |
 | --- | --- |
-| **Perception** | `my_robot_scan_node`, `rf2o_laser_odometry_node`, and Cartographer maintain the occupancy grid (`/map`). |
-| **Room Segmentation** | `my_robot_topologic_segmentation_node` colors the occupancy grid by room IDs (`/topologic_map`). |
-| **Vision** | `my_robot_vision_node` and `my_robot_detection_node` run YOLO11 and publish detections as `MarkerArray` messages. |
-| **Semantic Fusion** | `my_robot_semantic_segmentation_node` reads detections, maps each to a segmented room ID, and publishes `/semantic_map` plus `/semantic_map_labels_markers`. |
-| **Exploration / Mapping** | `my_robot_cartographer_node` provides autonomous navigation with frontier exploration and safety behaviors; `my_robot_serialize_pose_graph_node` periodically saves pose graphs. |
+| **Perception** | [`my_robot_scan_node`](./final_project_ws/src/my_robot_pkg/my_robot/my_robot_scan_node.py), [`rf2o_laser_odometry_node`](./final_project_ws/src/rf2o_laser_odometry/src/CLaserOdometry2DNode.cpp), and Cartographer maintain the occupancy grid (`/map`). |
+| **Room Segmentation** | [`my_robot_topologic_segmentation_node`](./final_project_ws/src/my_robot_pkg/my_robot/my_robot_topologic_segmentation_node.py) colors the occupancy grid by room IDs (`/topologic_map`). |
+| **Vision** | [`my_robot_vision_node`](./final_project_ws/src/my_robot_pkg/my_robot/my_robot_vision_node.py) and [`my_robot_detection_node`](./final_project_ws/src/my_robot_pkg/my_robot/my_robot_detection_node.py) run YOLO11 and publish detections as `MarkerArray` messages. |
+| **Semantic Fusion** | [`my_robot_semantic_segmentation_node`](./final_project_ws/src/my_robot_pkg/my_robot/my_robot_semantic_segmentation_node.py) reads detections, maps each to a segmented room ID, and publishes `/semantic_map` plus `/semantic_map_labels_markers`. |
+| **Exploration / Mapping** | [`my_robot_cartographer_node`](./final_project_ws/src/my_robot_pkg/my_robot/my_robot_cartographer_node.py) provides autonomous navigation with frontier exploration and safety behaviors; [`my_robot_serialize_pose_graph_node`](./final_project_ws/src/my_robot_pkg/my_robot/my_robot_serialize_pose_graph_node.py) periodically saves pose graphs. |
 
 Additional tools:
-- `my_robot_bringup.bash` – orchestrates the ROS 2 workspace setup and launches.
-- RViz configuration (`my_robot.rviz`) for monitoring detections, topologic segments, and semantic labels.
-- Scene descriptions in `scenes/` for CoppeliaSim or RViz playback.
+- RViz configuration ([`my_robot.rviz`](./final_project_ws/src/my_robot_pkg/rviz/my_robot.rviz)) for monitoring detections, topologic segments, and semantic labels.
+- Scene descriptions in [`scenes/`](./scenes/) for CoppeliaSim or RViz playback.
 
 ## 3. Semantic Pipeline
 
@@ -32,23 +31,20 @@ Additional tools:
 
    ![Topologic segmentation](./screenshots/topologic_room_segmentation.png)
 
-   The SLAM stack generates a 2D occupancy grid. Room segmentation (based on IPA room segmentation and coverage-planning techniques) clusters the map into room IDs.  
+   The SLAM stack generates a 2D occupancy grid. [`my_robot_topologic_segmentation_node`](./final_project_ws/src/my_robot_pkg/my_robot/my_robot_topologic_segmentation_node.py) repairs walls, extracts a distance transform, seeds local maxima, and runs a watershed/Voronoi segmentation to assign consistent room IDs.  
    
    
 2. **Object Detection**  
 
    ![Bathroom example](./screenshots/toilet.jpg)
    
-   YOLO11 is trained/fine-tuned with everyday household objects (InteriorGS dataset, annotated scenes, and domain randomization). Debug overlays can be inspected in RViz.  
+   [`my_robot_detection_node`](./final_project_ws/src/my_robot_pkg/my_robot/my_robot_detection_node.py) loads the local YOLO11n checkpoint (`final_project_ws/models/yolo11n.pt`), subscribes to RGB and depth frames, triangulates 3D centroids with the TF tree, and publishes persistent detections as `/detections_markers` plus saved crops under `detections/`.  
 
 3. **Semantic Assignment**  
 
    ![Semantic room label coloring](./screenshots/semantic_room_segmentation.png)
 
-   Detected objects are mapped to canonical room labels through a lookup table stored in `config/semantic_room_seg_classes.json`. For example, finding *stove*, *pan* → `kitchen`; *mirror*, *toilet* → `bathroom`.  
-
-4. **Publication**  
-   The semantic occupancy grid is published on `/semantic_map` (OccupancyGrid). White text markers show the room class in RViz.
+   [`my_robot_semantic_segmentation_node`](./final_project_ws/src/my_robot_pkg/my_robot/my_robot_semantic_segmentation_node.py) subscribes to `/topologic_map` and `/detections_markers`, normalizes detections via [`config/semantic_room_seg_classes.json`](./final_project_ws/src/my_robot_pkg/config/semantic_room_seg_classes.json), assigns the dominant room label per segmented polygon, and republishes both `/semantic_map` and `/semantic_map_labels_markers`.  
 
 ## 4. Repository Layout
 
@@ -59,14 +55,14 @@ final_project/
 │   ├── src/rf2o_laser_odometry/
 │   └── ...
 ├── screenshots/              # Figures used in this README
-├── scenes/                   # Demo scenes/environment descriptions
-└── scripts/                  # Helper scripts (e.g., bringup)
+├── scenes/                   # Coppelia scenes
+└── scripts/                  # Helper scripts (generate_detection_report)
 ```
 
 Important paths:
-- `final_project_ws/src/my_robot_pkg/my_robot/` – Python nodes (vision, detection, semantic fusion, exploration).
-- `final_project_ws/src/my_robot_pkg/launch/` – Launch files for mapping and localization.
-- `final_project_ws/src/my_robot_pkg/config/semantic_room_seg_classes.json` – room label lookup.
+- [`final_project_ws/src/my_robot_pkg/my_robot/`](./final_project_ws/src/my_robot_pkg/my_robot/) – Python nodes (vision, detection, semantic fusion, exploration).
+- [`final_project_ws/src/my_robot_pkg/launch/`](./final_project_ws/src/my_robot_pkg/launch/) – Launch files for mapping and localization.
+- [`final_project_ws/src/my_robot_pkg/config/semantic_room_seg_classes.json`](./final_project_ws/src/my_robot_pkg/config/semantic_room_seg_classes.json) – room label lookup.
 
 ## 5. Software Stack & Dependencies
 
@@ -78,10 +74,7 @@ Important paths:
 Install base dependencies:
 ```bash
 sudo apt update
-sudo apt install python3-colcon-common-extensions ros-jazzy-navigation2 ros-jazzy-slam-toolbox \
-                 ros-jazzy-cartographer-ros ros-jazzy-tf-transformations \
-                 ros-jazzy-rviz2 ros-jazzy-ros2launch
-pip install -r final_project_ws/src/my_robot_pkg/requirements.txt  # if provided
+sudo apt install ros-jazzy-slam-toolbox
 ```
 
 ## 6. Building the Workspace
@@ -100,7 +93,7 @@ If you frequently switch terminals, call `source final_project_ws/install/setup.
 ```bash
 cd final_project
 source final_project_ws/install/setup.bash
-ros2 launch my_robot_pkg my_robot_mapping.launch.py use_sim_time:=false
+ros2 launch my_robot_pkg my_robot_mapping.launch.py
 ```
 - Starts RF2O odometry, LiDAR scan node, command-velocity node, Cartographer, semantic modules, and `slam_toolbox` (delayed to allow TF start-up).
 - `my_robot_cartographer_node` explores automatically; monitor `/planned_path`, `/followed_path`, `/semantic_map`.
@@ -110,7 +103,7 @@ ros2 launch my_robot_pkg my_robot_mapping.launch.py use_sim_time:=false
 ```bash
 cd final_project
 source final_project_ws/install/setup.bash
-ros2 launch my_robot_pkg my_robot_localize.launch.py use_sim_time:=false slam_start_delay:=1.0
+ros2 launch my_robot_pkg my_robot_localize.launch.py
 ```
 - Brings up the same perception stack but without pose graph serialization.
 - Suitable for experiments where a prebuilt map is loaded (from `map/` or `pose_graphs/`).

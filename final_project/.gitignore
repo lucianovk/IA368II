@@ -4,3 +4,5 @@
 **/log/
 **/__pycache__/
 **/detections/
+**/pose_graphs/
+yolo11n.pt

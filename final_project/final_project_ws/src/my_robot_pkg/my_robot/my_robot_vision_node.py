@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+"""
+CoppeliaSim bridge that publishes RGB/depth streams and a camera TF so ROS nodes can
+consume simulated vision data just like a physical sensor.
+"""
 import math
 import numpy as np
 
@@ -27,7 +31,7 @@ class CoppeliaVisionPublisher(Node):
         self.client = RemoteAPIClient()
         self.sim = self.client.require('sim')
         self.vision_handle = self.sim.getObject('/myRobot/visionSensor')
-        # Clipping planes fetched directly from the sensor
+        # Query clipping planes and field of view so we can convert depth to meters downstream
         try:
             self.near_clip = self.sim.getObjectFloatParam(
                 self.vision_handle, self.sim.visionfloatparam_near_clipping
@@ -49,7 +53,7 @@ class CoppeliaVisionPublisher(Node):
             self.far_clip = 3.5
             self.fov_deg = 57.0
 
-        # Static TF that keeps camera_link 0.12 m above base_link
+        # Publish a static TF so downstream nodes know where the camera sits relative to base_link
         self.static_tf_broadcaster = StaticTransformBroadcaster(self)
         static_t = TransformStamped()
         static_t.header.stamp = self.get_clock().now().to_msg()
@@ -65,7 +69,7 @@ class CoppeliaVisionPublisher(Node):
         static_t.transform.rotation.w = 0.70710678118
         self.static_tf_broadcaster.sendTransform(static_t)
 
-        # 10 Hz
+        # Run at 10 Hz; faster loops waste CPU without adding much value for this sim setup
         self.timer = self.create_timer(0.1, self.timer_callback)
         self.get_logger().info('CoppeliaVisionPublisher started.')
         self.first_frame_logged = False
@@ -121,7 +125,7 @@ class CoppeliaVisionPublisher(Node):
 
         arr = arr.reshape((height, width, 3))
 
-        # Orientation tweak: flip horizontally so the view matches RViz expectations.
+        # Flip horizontally so the virtual camera matches the robot's RViz view
         lfarr = np.fliplr(arr)
         arr_uint8 = lfarr.copy()
 
