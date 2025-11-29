@@ -24,6 +24,15 @@ import yaml
 import argparse
 from geometry_msgs.msg import Pose, Point, Quaternion
 
+
+def safe_shutdown():
+    """Shut down rclpy if it has not already been stopped."""
+    try:
+        if rclpy.ok():
+            rclpy.shutdown()
+    except Exception:
+        pass
+
 class TopologicSegmentationNode(Node):
     """
     Watershed segmentation + wall repair + fusion of small rooms.
@@ -352,7 +361,7 @@ def main(args=None):
                 print("Error: segmentation did not return any result.")
             
             node.destroy_node()
-            rclpy.shutdown()
+            safe_shutdown()
             
         except Exception as e:
             print(f"Critical error: {e}")
@@ -368,7 +377,7 @@ def main(args=None):
             pass
         finally:
             node.destroy_node()
-            rclpy.shutdown()
+            safe_shutdown()
 
 if __name__ == '__main__':
     main()

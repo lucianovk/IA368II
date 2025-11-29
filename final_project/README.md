@@ -24,6 +24,7 @@ Key ideas:
 Additional tools:
 - RViz configuration ([`my_robot.rviz`](./final_project_ws/src/my_robot_pkg/rviz/my_robot.rviz)) for monitoring detections, topologic segments, and semantic labels.
 - Scene descriptions in [`scenes/`](./scenes/) for CoppeliaSim or RViz playback.
+- Synthetic data helpers in [`scripts/`](./scripts/) such as `capture_scene_objects.py`, which orients the robot camera toward every object that exposes a valid 3D bounding box and saves YOLO-ready image/label pairs for retraining.
 
 **Node deep dives**  
 For implementation notes and extended explanations see:
@@ -45,7 +46,7 @@ For implementation notes and extended explanations see:
 
    ![Bathroom example](./screenshots/toilet.jpg)
    
-   [`my_robot_detection_node`](./final_project_ws/src/my_robot_pkg/my_robot/my_robot_detection_node.py) loads the local YOLO11n checkpoint (`final_project_ws/models/yolo11n.pt`), subscribes to RGB and depth frames, triangulates 3D centroids with the TF tree, and publishes persistent detections as `/detections_markers` plus saved crops under `detections/`.  
+   [`my_robot_detection_node`](./final_project_ws/src/my_robot_pkg/my_robot/my_robot_detection_node.py) loads the local YOLO11x checkpoint (`final_project_ws/models/yolo11x.pt`), subscribes to RGB and depth frames, triangulates 3D centroids with the TF tree, and publishes persistent detections as `/detections_markers` plus saved crops under `detections/`. Each crop is rendered with the label and confidence, depth is derived from the closest valid measurement inside the box, and detections are accepted only if their label exists in [`semantic_room_seg_classes.json`](./final_project_ws/src/my_robot_pkg/config/semantic_room_seg_classes.json) and pass the configurable `confidence_threshold` parameter (default `0.7`).  
 
 3. **Semantic Assignment**  
 
@@ -123,9 +124,9 @@ Topics of interest: `/map`, `/topologic_map`, `/semantic_map`, `/detections_mark
 
 ## 8. References
 
-1. Ye, Y. et al., “InteriorVerse: Multimodal Indoor Scene Understanding,” arXiv:2403.12920.  
-2. SpatialVerse – InteriorGS dataset, Hugging Face.  
-3. K. Okada et al., “Room Recognition in 2D Maps,” ICRA 2016.  
+1. Ye, Y. et al., “InteriorVerse: Multimodal Indoor Scene Understanding,” [arXiv:2403.12920](https://arxiv.org/abs/2403.12920).  
+2. SpatialVerse – InteriorGS dataset, [Hugging Face](https://huggingface.co/datasets/SpatialVerse/InteriorVerse).  
+3. K. Okada et al., “Room Recognition in 2D Maps,” [ICRA 2016](https://ieeexplore.ieee.org/document/7487532).  
 4. ROS Wiki – [ipa_room_segmentation](https://wiki.ros.org/ipa_room_segmentation).  
 5. ROS Wiki – [rose2](https://wiki.ros.org/rose2).  
 6. IPA 320 – [ipa_coverage_planning](https://github.com/ipa320/ipa_coverage_planning).

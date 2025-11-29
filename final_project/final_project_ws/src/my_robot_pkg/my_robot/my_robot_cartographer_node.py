@@ -531,7 +531,11 @@ class MyRobotExplorer(Node):
     def stop_robot(self):
         """Publish a zero Twist so any dynamic motion is cancelled."""
         twist = Twist()
-        self.pub_cmd.publish(twist)
+        try:
+            if rclpy.ok():
+                self.pub_cmd.publish(twist)
+        except Exception as exc:
+            self.get_logger().warn(f'Failed to publish stop command: {exc}')
 
     def control_loop(self):
         """State machine heartbeat that alternates between planning, avoiding and moving."""
@@ -632,7 +636,8 @@ def main(args=None):
     finally:
         node.stop_robot()
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 if __name__ == '__main__':
     main()

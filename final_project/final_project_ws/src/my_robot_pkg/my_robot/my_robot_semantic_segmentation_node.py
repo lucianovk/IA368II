@@ -6,8 +6,11 @@ in semantic_room_seg_classes.json, and colors /topologic_map with the estimated 
 publishing the result as an OccupancyGrid on /semantic_map.
 """
 
+import colorsys
+import hashlib
+import math
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 import json
 import numpy as np
@@ -33,6 +36,12 @@ class SemanticRoomSegmentationNode(Node):
         self.declare_parameter('room_map_topic', '/topologic_map')
         self.declare_parameter('detections_topic', '/detections_markers')
         self.declare_parameter('semantic_map_topic', '/semantic_map')
+        self.declare_parameter('label_refresh_period', 5.0)
+        self.declare_parameter('label_shift_threshold', 0.25)
+        self.declare_parameter('legend_topic', '/semantic_map_legend_markers')
+        self.declare_parameter('legend_origin_x', 0.0)
+        self.declare_parameter('legend_origin_y', 0.0)
+        self.declare_parameter('legend_spacing', 0.4)
 
         semantic_map_path = Path(self.get_parameter('semantic_map_file').value)
         if not semantic_map_path.exists():
@@ -54,12 +63,22 @@ class SemanticRoomSegmentationNode(Node):
         self.room_map_topic = self.get_parameter('room_map_topic').value
         self.detections_topic = self.get_parameter('detections_topic').value
         self.semantic_topic = self.get_parameter('semantic_map_topic').value
+        self.label_refresh_period = float(self.get_parameter('label_refresh_period').value)
+        shift_param = float(self.get_parameter('label_shift_threshold').value)
+        self.label_shift_threshold = 0.01 if shift_param < 0.01 else shift_param
+        self.legend_topic = self.get_parameter('legend_topic').value
+        self.legend_origin_x = float(self.get_parameter('legend_origin_x').value)
+        self.legend_origin_y = float(self.get_parameter('legend_origin_y').value)
+        self.legend_spacing = float(self.get_parameter('legend_spacing').value)
 
         self.room_map_msg: Optional[OccupancyGrid] = None
         self.room_map_np: Optional[np.ndarray] = None
         self.room_value_map: Dict[str, int] = {}
         self.latest_assignments: Dict[int, str] = {}
         self.semantic_dirty = False
+        self.last_room_values: Dict[str, int] = {}
+        self.last_room_ids: Dict[str, list[int]] = {}
+        self.last_label_positions: Dict[str, Tuple[float, float]] = {}
 
         self.room_sub = self.create_subscription(
             OccupancyGrid, self.room_map_topic, self._room_map_cb, 10
@@ -70,6 +89,12 @@ class SemanticRoomSegmentationNode(Node):
         self.semantic_pub = self.create_publisher(OccupancyGrid, self.semantic_topic, 10)
         self.publish_timer = self.create_timer(10.0, self._publish_semantic_map)
         self.labels_pub = self.create_publisher(MarkerArray, '/semantic_map_labels_markers', 10)
+        self.legend_pub = self.create_publisher(MarkerArray, self.legend_topic, 10)
+        self.labels_position_timer = None
+        if self.label_refresh_period > 0.0:
+            self.labels_position_timer = self.create_timer(
+                self.label_refresh_period, self._labels_timer_cb
+            )
 
     def _load_semantic_classes(self, path: Path) -> Dict[str, str]:
         """Read the label->room mapping JSON and normalize labels."""
@@ -163,18 +188,33 @@ class SemanticRoomSegmentationNode(Node):
         out_msg.info = self.room_map_msg.info
         out_msg.data = semantic_grid.flatten().tolist()
         self.semantic_pub.publish(out_msg)
+        self.last_room_values = dict(room_name_to_value)
+        self.last_room_ids = {name: ids[:] for name, ids in room_name_to_ids.items()}
         self._publish_labels(room_name_to_value, room_name_to_ids)
+        self._publish_legend(room_name_to_value)
         self.get_logger().info(
             f'/semantic_map published with {len(room_name_to_value)} classes.'
         )
         self.semantic_dirty = False
 
+    def _labels_timer_cb(self) -> None:
+        """Periodically re-evaluate whether label markers moved."""
+        if not self.last_room_values or not self.last_room_ids:
+            return
+        self._publish_labels(self.last_room_values, self.last_room_ids, periodic=True)
+
     def _publish_labels(
-        self, room_values: Dict[str, int], room_ids: Dict[str, list[int]]
+        self,
+        room_values: Dict[str, int],
+        room_ids: Dict[str, list[int]],
+        periodic: bool = False,
     ) -> None:
-        """Publish one text marker per semantic room so the GUI shows names."""
+        """Publish semantic room labels and optionally refresh them periodically."""
+        if self.room_map_msg is None or self.room_map_np is None:
+            return
         ma = MarkerArray()
         stamp = self.get_clock().now().to_msg()
+        new_positions: Dict[str, Tuple[float, float]] = {}
         for room_name, value in room_values.items():
             ids = room_ids.get(room_name, [])
             if not ids:
@@ -209,14 +249,106 @@ class SemanticRoomSegmentationNode(Node):
             marker.color.a = 0.9
             marker.text = room_name
             ma.markers.append(marker)
+            new_positions[room_name] = (float(world_x), float(world_y))
 
-        if ma.markers:
-            self.labels_pub.publish(ma)
+        if not ma.markers:
+            self.last_label_positions = {}
+            if not periodic:
+                self.get_logger().info('/semantic_map_labels_markers had no markers to publish.')
+            return
+
+        should_publish = True
+        if periodic and self.last_label_positions:
+            should_publish = self._labels_positions_changed(new_positions)
+        if not should_publish:
+            return
+
+        self.labels_pub.publish(ma)
+        self.last_label_positions = new_positions
+        if periodic:
+            self.get_logger().info(
+                f'/semantic_map_labels_markers refreshed with {len(ma.markers)} markers.'
+            )
+        else:
             self.get_logger().info(
                 f'/semantic_map_labels_markers published with {len(ma.markers)} markers.'
             )
-        else:
-            self.get_logger().info('/semantic_map_labels_markers had no markers to publish.')
+
+    def _publish_legend(self, room_values: Dict[str, int]) -> None:
+        """Publish a simple color legend so RViz users can match colors to rooms."""
+        if not room_values or self.legend_pub is None:
+            return
+        frame_id = 'map'
+        if self.room_map_msg is not None and self.room_map_msg.header.frame_id:
+            frame_id = self.room_map_msg.header.frame_id
+        ma = MarkerArray()
+        stamp = self.get_clock().now().to_msg()
+        sorted_rooms = sorted(room_values.keys())
+        base_x = self.legend_origin_x
+        base_y = self.legend_origin_y
+        spacing = 0.4 if self.legend_spacing <= 0 else self.legend_spacing
+        for idx, room_name in enumerate(sorted_rooms):
+            y_offset = base_y + spacing * idx
+            color = self._semantic_color(room_name)
+            cube = Marker()
+            cube.header.frame_id = frame_id
+            cube.header.stamp = stamp
+            cube.ns = 'semantic_room_legend'
+            cube.id = idx
+            cube.type = Marker.CUBE
+            cube.action = Marker.ADD
+            cube.pose.position.x = float(base_x)
+            cube.pose.position.y = float(y_offset)
+            cube.pose.position.z = 0.2
+            cube.pose.orientation.w = 1.0
+            cube.scale.x = 0.25
+            cube.scale.y = 0.25
+            cube.scale.z = 0.05
+            cube.color.r, cube.color.g, cube.color.b = color
+            cube.color.a = 1.0
+            ma.markers.append(cube)
+
+            text = Marker()
+            text.header.frame_id = frame_id
+            text.header.stamp = stamp
+            text.ns = 'semantic_room_legend_text'
+            text.id = 1000 + idx
+            text.type = Marker.TEXT_VIEW_FACING
+            text.action = Marker.ADD
+            text.pose.position.x = float(base_x + 0.35)
+            text.pose.position.y = float(y_offset)
+            text.pose.position.z = 0.3
+            text.pose.orientation.w = 1.0
+            text.scale.z = 0.25
+            text.color.r = 1.0
+            text.color.g = 1.0
+            text.color.b = 1.0
+            text.color.a = 0.95
+            text.text = room_name
+            ma.markers.append(text)
+
+        if ma.markers:
+            self.legend_pub.publish(ma)
+            self.get_logger().info(
+                f'/semantic_map_legend_markers published with {len(sorted_rooms)} entries.'
+            )
+
+    def _labels_positions_changed(
+        self, new_positions: Dict[str, Tuple[float, float]]
+    ) -> bool:
+        """Return True if any label moved farther than the configured threshold."""
+        if not self.last_label_positions:
+            return True
+        if len(new_positions) != len(self.last_label_positions):
+            return True
+        threshold = self.label_shift_threshold
+        for room_name, coords in new_positions.items():
+            previous = self.last_label_positions.get(room_name)
+            if previous is None:
+                return True
+            if math.hypot(coords[0] - previous[0], coords[1] - previous[1]) >= threshold:
+                return True
+        return False
 
     def _lookup_room_id(self, pose: Pose) -> Optional[int]:
         """Convert a pose in map coordinates to the discrete room/region id."""
@@ -240,6 +372,16 @@ class SemanticRoomSegmentationNode(Node):
             next_val = ((next_val - base) % 120) + base
             self.room_value_map[room_name] = next_val
         return self.room_value_map[room_name]
+
+    def _semantic_color(self, room_name: str) -> Tuple[float, float, float]:
+        """Derive a repeatable RGB color for the legend based on the room name."""
+        digest = hashlib.sha1(room_name.encode('utf-8')).hexdigest()
+        seed = int(digest[:6], 16)
+        hue = (seed % 360) / 360.0
+        sat = 0.65
+        val = 0.95
+        r, g, b = colorsys.hsv_to_rgb(hue, sat, val)
+        return float(r), float(g), float(b)
 
     def _resolve_semantic_file(self) -> Optional[Path]:
         """Try to locate the semantic class file in common workspaces/install spaces."""

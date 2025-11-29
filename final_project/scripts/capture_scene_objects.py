@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """
-Traverse the current CoppeliaSim scene, list every object that exposes a valid
-3D bounding box, position the robot so its vision sensor faces the object from
-floor level, capture a single RGB frame, and save YOLO-style annotations.
+Generate synthetic YOLO data from a CoppeliaSim scene.
 
-Run from inside `final_project/final_project_ws`:
+HEIGHT CORRECTION (Z POSITIONING):
+- Places the object center on a virtual reference plane (no physical floor).
+- Uses the sensor depth map to calculate real dimensions and adjust camera/labels.
+- Keeps the sensor automatic (Implicit) with faithful cloning.
 
-    python ../scripts/capture_scene_objects.py --output ./synthetic_export
+How to run:
+    python capture_scene_objects.py --output ./synthetic_export
 """
 
 from __future__ import annotations
@@ -14,49 +16,168 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
+import queue
+import select
+import sys
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw, ImageTk
+
+try:
+    import termios
+    import tty
+except ImportError:  # pragma: no cover - plataforma sem termios
+    termios = None
+    tty = None
+
+try:
+    import tkinter as tk
+except ImportError:  # pragma: no cover - sistemas sem Tk
+    tk = None
 
 try:
     from coppeliasim_zmqremoteapi_client import RemoteAPIClient
-except ImportError as exc:  # pragma: no cover
-    raise SystemExit(
-        'coppeliasim_zmqremoteapi_client is required. Install it with pip.'
-    ) from exc
+except ImportError as exc:
+    raise SystemExit('Install coppeliasim-zmqremoteapi-client') from exc
 
 
 @dataclass
 class SceneObject:
     handle: int
     name: str
-    position: Tuple[float, float, float]
     bbox_min: np.ndarray
     bbox_max: np.ndarray
 
 
+@dataclass
+class DepthAnalysis:
+    bbox_px: Tuple[int, int, int, int]
+    width_m: float
+    height_m: float
+    world_min_z: Optional[float] = None
+    world_max_z: Optional[float] = None
+
+
+class QuitRequested(RuntimeError):
+    """Raised when the user asks to abort with 'q'."""
+
+
+class QuitWatcher:
+    def __init__(self) -> None:
+        self.enabled = bool(sys.stdin.isatty() and termios and tty)
+        self.fd = None
+        self.prev_settings = None
+        self.requested = False
+
+    def __enter__(self):
+        if self.enabled:
+            try:
+                self.fd = sys.stdin.fileno()
+                self.prev_settings = termios.tcgetattr(self.fd)
+                tty.setcbreak(self.fd)
+            except Exception:
+                self.enabled = False
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if self.enabled and self.fd is not None and self.prev_settings is not None:
+            termios.tcsetattr(self.fd, termios.TCSADRAIN, self.prev_settings)
+
+    def poll(self) -> bool:
+        if not self.enabled or self.requested:
+            return self.requested
+        rlist, _, _ = select.select([sys.stdin], [], [], 0)
+        if rlist:
+            ch = sys.stdin.read(1)
+            if ch.lower() == 'q':
+                self.requested = True
+        return self.requested
+
+
+def check_quit(watcher: Optional[QuitWatcher], viewer: Optional['DebugViewer'] = None) -> None:
+    if watcher and watcher.poll():
+        raise QuitRequested()
+    if viewer and viewer.stop_requested:
+        raise QuitRequested()
+
+
+class DebugViewer:
+    """Tkinter viewer kept in the main thread to avoid async delete errors."""
+
+    def __init__(self, enabled: bool):
+        self.enabled = bool(
+            enabled and tk is not None and threading.current_thread() is threading.main_thread()
+        )
+        self._root = None
+        self.stop_requested = False
+        if self.enabled:
+            try:
+                self._root = tk.Tk()
+                self._root.title('Captura Debug Viewer')
+                btn = tk.Button(self._root, text='Stop (q)', command=self._on_stop)
+                btn.pack(fill='x')
+                self._label = tk.Label(self._root)
+                self._label.pack(fill='both', expand=True)
+                self._caption = tk.Label(self._root, text='', anchor='w')
+                self._caption.pack(fill='x')
+            except Exception:
+                self.enabled = False
+                self._root = None
+
+    def _on_stop(self):
+        self.stop_requested = True
+        if self._root is not None:
+            try:
+                self._root.destroy()
+            except Exception:
+                pass
+        self.enabled = False
+
+    def show(self, img_arr: np.ndarray, caption: str):
+        if not self.enabled or self._root is None:
+            return
+        pil_img = Image.fromarray(img_arr)
+        photo = ImageTk.PhotoImage(pil_img)
+        self._label.configure(image=photo)
+        self._label.image = photo
+        self._caption.configure(text=caption)
+        try:
+            self._root.update_idletasks()
+            self._root.update()
+        except Exception:
+            # If window was closed manually, disable further updates
+            self.enabled = False
+
+    def stop(self):
+        if not self.enabled or self._root is None:
+            return
+        try:
+            self._root.destroy()
+        except Exception:
+            pass
+        self.enabled = False
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--host', default='127.0.0.1', help='Remote API host.')
-    parser.add_argument('--port', type=int, default=23000, help='Remote API port.')
-    parser.add_argument('--robot', default='/myRobot', help='Robot base alias/path.')
-    parser.add_argument('--vision-sensor', default='/myRobot/visionSensor', help='Vision sensor path.')
-    parser.add_argument('--delay', type=float, default=0.2, help='Delay after moving before capture (s).')
-    parser.add_argument('--output', type=Path, required=True, help='Directory where images and labels will be stored.')
-    parser.add_argument('--image-format', default='png', choices=('png', 'jpg', 'jpeg'), help='Image format to save.')
-    parser.add_argument('--min-area', type=float, default=0.01, help='Minimum normalized bbox area to accept.')
-    parser.add_argument('--flip-horizontal', action='store_true', help='Mirror images horizontally.')
-    parser.add_argument('--flip-vertical', action='store_true', help='Flip images vertically (default off).')
-    parser.add_argument('--max-bbox-diagonal', type=float, default=6.0, help='Skip objects whose bbox diagonal exceeds this (meters).')
-    parser.add_argument('--yaw-samples', type=int, default=4, help='Number of yaw angles to try around each object.')
-    parser.add_argument('--arena-height', type=float, default=3.0, help='Height offset (m) above the original floor for the capture arena.')
+    parser.add_argument('--host', default='127.0.0.1')
+    parser.add_argument('--port', type=int, default=23000)
+    parser.add_argument('--robot', default='/myRobot')
+    parser.add_argument('--vision-sensor', default='/myRobot/visionSensor')
+    parser.add_argument('--output', type=Path, default=Path('./synthetic_export'))
+    parser.add_argument('--delay', type=float, default=0.2)
+    parser.add_argument('--fov', type=float, default=57.0)
+    parser.add_argument('--max-bbox-diagonal', type=float, default=10.0)
+    parser.add_argument('--samples', type=int, default=8)
+    parser.add_argument('--arena-height', type=float, default=5.0)
+    parser.add_argument('--depth-band', type=float, default=0.35, help='Meters above nearest depth to keep as object mask.')
     return parser.parse_args()
-
-
 
 
 def connect(host: str, port: int):
@@ -64,502 +185,654 @@ def connect(host: str, port: int):
     return client.require('sim')
 
 
-def load_allowed_names(path: Path) -> set[str]:
-    try:
-        with path.open('r', encoding='utf-8') as fp:
-            data = json.load(fp)
-    except Exception as exc:
-        raise SystemExit(f'Failed to read {path}: {exc}') from exc
-    if isinstance(data, dict):
-        if 'objects' in data and isinstance(data['objects'], list):
-            data = data['objects']
-        else:
-            raise SystemExit(f'JSON {path} must be a list of names or contain an "objects" list.')
-    if not isinstance(data, list):
-        raise SystemExit(f'JSON {path} must be a list of names.')
-    names = {str(item) for item in data}
-    if not names:
-        raise SystemExit(f'JSON {path} did not contain any object names.')
-    return names
-
-
-def ensure_sim_running(sim) -> None:
-    """Stop any older simulation, enable stepping, and start fresh."""
-    try:
-        sim.stopSimulation()
-        while sim.getSimulationState() != sim.simulation_stopped:
-            time.sleep(0.05)
-    except Exception:
-        pass
-    sim.setStepping(True)
-    sim.startSimulation()
-
-
 def get_handle(sim, path: str) -> int:
     try:
         return sim.getObject(path)
-    except Exception:
+    except:
         return sim.getObjectHandle(path)
 
 
-def clone_sensor(sim, source_handle: int) -> int:
-    """Duplicate the source vision sensor so we can move it freely."""
-    for option in (1, 0):
-        try:
-            copies = sim.copyPasteObjects([source_handle], option)
-        except Exception:
-            copies = []
-        if copies:
-            break
-    if not copies:
-        raise RuntimeError('Failed to duplicate vision sensor.')
-    new_handle = copies[0]
-    sim.setObjectParent(new_handle, sim.handle_world, True)
-    alias = sim.getObjectAlias(source_handle, 0) or 'visionSensor'
-    sim.setObjectAlias(new_handle, f'{alias}_capture')
-    return new_handle
+def object_path(sim, handle: int) -> str:
+    """Return hierarchical path for an object starting at scene root."""
+    parts = []
+    current = handle
+    while current not in (sim.handle_scene, -1):
+        alias = sim.getObjectAlias(current, 0) or f'h={current}'
+        parts.append(alias)
+        current = sim.getObjectParent(current)
+    parts.reverse()
+    return '/' + '/'.join(parts)
 
 
-def duplicate_object(sim, handle: int) -> Optional[int]:
-    """Copy an object (with children) so we can move it into the capture arena."""
-    for option in (1, 0):
-        try:
-            copies = sim.copyPasteObjects([handle], option)
-        except Exception:
-            copies = []
-        if copies:
-            sim.setObjectParent(copies[0], sim.handle_world, True)
-            return copies[0]
-    return None
+def remove_scripts_only(sim, handle: int) -> None:
+    try:
+        # 15 = sim.object_script_type
+        scripts = sim.getObjectsInTree(handle, 15, 0)
+        for s_h in scripts:
+            sim.removeObject(s_h)
+    except: pass
 
 
 def remove_object_tree(sim, handle: int) -> None:
-    """Remove a duplicated object, falling back to removeModel when suitable."""
     try:
         sim.removeModel(handle)
-        return
-    except Exception:
-        pass
+    except:
+        try:
+            sim.removeObject(handle)
+        except: pass
+
+
+def clone_sensor_simple(sim, source_handle: int) -> int:
+    """Clone sensor while keeping original settings."""
+    copies = sim.copyPasteObjects([source_handle], 0)
+    new_handle = copies[0]
+    sim.setObjectParent(new_handle, sim.handle_world, True)
+    sim.setObjectAlias(new_handle, 'visionSensor_clone')
+    remove_scripts_only(sim, new_handle)
+    return new_handle
+
+
+def read_bbox_params(sim, handle: int, start: int) -> Optional[Tuple[np.ndarray, np.ndarray]]:
     try:
-        sim.removeObject(handle)
-    except Exception:
-        pass
-
-
-def create_capture_floor(sim, origin: np.ndarray, size: float = 4.0) -> int:
-    shape_handle = sim.createPrimitiveShape(
-        sim.primitiveshape_plane,
-        [size, size, 0.01],
-        0,
-    )
-    sim.setObjectPosition(shape_handle, sim.handle_world, origin.tolist())
-    sim.setObjectOrientation(shape_handle, sim.handle_world, [0.0, 0.0, 0.0])
-    sim.setShapeColor(shape_handle, None, sim.colorcomponent_ambient_diffuse, [0.65, 0.65, 0.65])
-    sim.setShapeColor(shape_handle, None, sim.colorcomponent_specular, [0.1, 0.1, 0.1])
-    sim.setObjectAlias(shape_handle, 'capture_floor')
-    return shape_handle
-
-
-def capture_rgb(
-    sim, sensor_handle: int, flip_horizontal: bool, flip_vertical: bool
-) -> Tuple[np.ndarray, Tuple[int, int]]:
-    sim.handleVisionSensor(sensor_handle)
-    raw = sim.getVisionSensorCharImage(sensor_handle)
-    data = None
-    res = None
-    if isinstance(raw, (list, tuple)):
-        if len(raw) == 3:
-            data, rx, ry = raw
-            res = (int(rx), int(ry))
-        elif len(raw) == 2:
-            a, b = raw
-            if isinstance(a, (list, tuple)) and len(a) == 2:
-                res, data = (int(a[0]), int(a[1])), b
-            elif isinstance(b, (list, tuple)) and len(b) == 2:
-                res, data = (int(b[0]), int(b[1])), a
-    if res is None or data is None:
-        raise RuntimeError(f'Unexpected vision sensor result: {raw}')
-    width, height = res
-    arr = np.frombuffer(data, dtype=np.uint8)
-    expected = width * height * 3
-    if arr.size != expected:
-        raise RuntimeError(f'Unexpected RGB buffer length {arr.size} vs {expected}')
-    arr = arr.reshape((height, width, 3))
-    if flip_vertical:
-        arr = np.flipud(arr)
-    if flip_horizontal:
-        arr = np.fliplr(arr)
-    return arr.copy(), (width, height)
-
-
-def query_sensor_info(sim, sensor_handle: int) -> Tuple[int, int, float]:
-    res = sim.getVisionSensorResolution(sensor_handle)
-    width, height = int(res[0]), int(res[1])
-    try:
-        fov = sim.getObjectFloatParam(sensor_handle, sim.visionfloatparam_perspective_angle)
-        fov_deg = math.degrees(fov)
-    except Exception:
-        fov_deg = 57.0
-    return width, height, fov_deg
-
-
-def object_bbox(sim, handle: int) -> Optional[Tuple[np.ndarray, np.ndarray]]:
-    try:
-        min_x = sim.getObjectFloatParam(handle, sim.objfloatparam_modelbbox_min_x)
-        min_y = sim.getObjectFloatParam(handle, sim.objfloatparam_modelbbox_min_y)
-        min_z = sim.getObjectFloatParam(handle, sim.objfloatparam_modelbbox_min_z)
-        max_x = sim.getObjectFloatParam(handle, sim.objfloatparam_modelbbox_max_x)
-        max_y = sim.getObjectFloatParam(handle, sim.objfloatparam_modelbbox_max_y)
-        max_z = sim.getObjectFloatParam(handle, sim.objfloatparam_modelbbox_max_z)
+        vals = [sim.getObjectFloatParam(handle, x) for x in range(start, start + 6)]
     except Exception:
         return None
-    if None in (min_x, min_y, min_z, max_x, max_y, max_z):
+    if any(v is None for v in vals):
         return None
-    return (
-        np.array((float(min_x), float(min_y), float(min_z)), dtype=float),
-        np.array((float(max_x), float(max_y), float(max_z)), dtype=float),
-    )
+    mins = np.array([vals[0], vals[2], vals[4]])
+    maxs = np.array([vals[1], vals[3], vals[5]])
+    low = np.minimum(mins, maxs)
+    high = np.maximum(mins, maxs)
+    if np.max(high - low) < 0.02:
+        return None
+    return low, high
 
 
-def object_matrix(sim, handle: int) -> np.ndarray:
-    data = sim.getObjectMatrix(handle, sim.handle_world)
-    mat = np.eye(4)
-    mat[0, :3] = data[0:3]
-    mat[1, :3] = data[3:6]
-    mat[2, :3] = data[6:9]
-    mat[:3, 3] = data[9:12]
-    return mat
+def get_bbox_from_params(sim, handle: int, name: str) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+    """Read BBox via object float parameters (initial filter)."""
+    bbox = read_bbox_params(sim, handle, 21)
+    if bbox:
+        return bbox
+    return read_bbox_params(sim, handle, 15)
 
 
-def bbox_corners(mins: np.ndarray, maxs: np.ndarray) -> List[np.ndarray]:
-    corners: List[np.ndarray] = []
-    for dx in (mins[0], maxs[0]):
-        for dy in (mins[1], maxs[1]):
-            for dz in (mins[2], maxs[2]):
-                corners.append(np.array([dx, dy, dz], dtype=float))
-    return corners
+def capture_rgbd(sim, sensor_handle: int, width: int, height: int, near_clip: float, far_clip: float) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    try:
+        sim.handleVisionSensor(sensor_handle)
+    except Exception:
+        pass
 
+    img_char = sim.getVisionSensorCharImage(sensor_handle)
+    raw_data = img_char
+    if isinstance(img_char, (list, tuple)):
+        for item in img_char:
+            if isinstance(item, bytes):
+                raw_data = item
+                break
+    if not isinstance(raw_data, bytes):
+        raw_data = sim.getVisionSensorCharImage(sensor_handle)
 
-def transform_points(mat: np.ndarray, points: Iterable[np.ndarray]) -> List[np.ndarray]:
-    out: List[np.ndarray] = []
-    for pt in points:
-        vec = np.array([pt[0], pt[1], pt[2], 1.0])
-        world = mat @ vec
-        out.append(world[:3])
-    return out
-
-
-def euler_to_rot(euler: Tuple[float, float, float]) -> np.ndarray:
-    alpha, beta, gamma = euler
-    ca, cb, cg = math.cos(alpha), math.cos(beta), math.cos(gamma)
-    sa, sb, sg = math.sin(alpha), math.sin(beta), math.sin(gamma)
-    return np.array(
-        [
-            [cg * cb, cg * sb * sa - sg * ca, cg * sb * ca + sg * sa],
-            [sg * cb, sg * sb * sa + cg * ca, sg * sb * ca - cg * sa],
-            [-sb, cb * sa, cb * ca],
-        ]
-    )
-
-
-def rotation_to_euler(rot: np.ndarray) -> Tuple[float, float, float]:
-    sy = math.sqrt(rot[0, 0] ** 2 + rot[1, 0] ** 2)
-    singular = sy < 1e-6
-    if not singular:
-        alpha = math.atan2(rot[2, 1], rot[2, 2])
-        beta = math.atan2(-rot[2, 0], sy)
-        gamma = math.atan2(rot[1, 0], rot[0, 0])
+    img_arr = np.frombuffer(raw_data, dtype=np.uint8)
+    if img_arr.shape[0] != width * height * 3:
+        rgb = np.zeros((height, width, 3), dtype=np.uint8)
     else:
-        alpha = math.atan2(-rot[1, 2], rot[1, 1])
-        beta = math.atan2(-rot[2, 0], sy)
-        gamma = 0.0
-    return (alpha, beta, gamma)
+        rgb = np.flipud(img_arr.reshape((height, width, 3)))
+
+    depth_m = np.full((height, width), far_clip, dtype=np.float32)
+    depth_norm = np.ones((height, width), dtype=np.float32)
+    try:
+        depth_raw = sim.getVisionSensorDepth(sensor_handle)
+    except Exception:
+        depth_raw = None
+
+    depth_img = None
+    depth_res = None
+    if isinstance(depth_raw, (list, tuple)):
+        if len(depth_raw) == 3:
+            depth_img, res_x, res_y = depth_raw
+            depth_res = (int(res_x), int(res_y))
+        elif len(depth_raw) == 2:
+            a, b = depth_raw
+            if isinstance(a, (list, tuple)) and len(a) == 2:
+                depth_res, depth_img = (int(a[0]), int(a[1])), b
+            elif isinstance(b, (list, tuple)) and len(b) == 2:
+                depth_res, depth_img = (int(b[0]), int(b[1])), a
+    elif depth_raw is not None:
+        depth_img = depth_raw
+        depth_res = (width, height)
+
+    if depth_img is not None and depth_res is not None:
+        d_w, d_h = depth_res
+        if isinstance(depth_img, (bytes, bytearray)):
+            depth_arr = np.frombuffer(depth_img, dtype=np.float32)
+        else:
+            depth_arr = np.array(depth_img, dtype=np.float32)
+        if d_w > 0 and d_h > 0 and depth_arr.size == d_w * d_h:
+            depth_arr = depth_arr.reshape((d_h, d_w))
+            depth_arr = np.flipud(depth_arr)
+            depth_norm = depth_arr.copy()
+            depth_m = near_clip + depth_arr * (far_clip - near_clip)
+
+    return rgb, depth_m, depth_norm
 
 
-def look_at_matrix(position: np.ndarray, target: np.ndarray) -> np.ndarray:
-    forward = target - position
-    norm = np.linalg.norm(forward)
-    if norm < 1e-9:
-        raise ValueError('Camera coincides with target.')
-    forward /= norm
-    up = np.array([0.0, 0.0, 1.0])
-    if abs(np.dot(forward, up)) > 0.95:
-        up = np.array([0.0, 1.0, 0.0])
-    right = np.cross(forward, up)
-    right_norm = np.linalg.norm(right)
-    if right_norm < 1e-9:
-        raise ValueError('Degenerate camera orientation.')
-    right /= right_norm
-    true_up = np.cross(right, forward)
-    rot = np.column_stack((right, true_up, forward))
-    return rot
+def get_look_at_matrix(eye: np.ndarray, target: np.ndarray) -> List[float]:
+    z_axis = target - eye
+    dist = np.linalg.norm(z_axis)
+    if dist < 1e-5: z_axis = np.array([0, 0, 1.0])
+    else: z_axis /= dist
+    
+    global_up = np.array([0, 0, 1.0])
+    if abs(np.dot(z_axis, global_up)) > 0.98: global_up = np.array([0, 1.0, 0])
+    
+    x_axis = np.cross(global_up, z_axis)
+    x_axis /= np.linalg.norm(x_axis)
+    y_axis = np.cross(z_axis, x_axis)
+    
+    m = [x_axis[0], y_axis[0], z_axis[0], eye[0],
+         x_axis[1], y_axis[1], z_axis[1], eye[1],
+         x_axis[2], y_axis[2], z_axis[2], eye[2]]
+    return m
 
 
-def project_points(
-    points: Iterable[np.ndarray],
-    cam_pos: np.ndarray,
-    cam_rot: np.ndarray,
-    width: int,
-    height: int,
+def adjust_object_height_from_depth(sim, obj_handle: int, floor_z: float, analysis: Optional[DepthAnalysis], log_fn=None) -> bool:
+    """Rebaixa ou eleva o objeto para alinhar a base ao plano virtual usando profundidade."""
+    if not analysis or analysis.world_min_z is None:
+        return False
+    delta = floor_z - analysis.world_min_z
+    if abs(delta) < 5e-4:
+        return False
+    pos = np.array(sim.getObjectPosition(obj_handle, sim.handle_world))
+    pos[2] += delta
+    sim.setObjectPosition(obj_handle, sim.handle_world, pos.tolist())
+    if log_fn:
+        log_fn(f'Ajuste Z objeto {obj_handle}: delta {delta:+.4f} m')
+    return True
+
+
+def analyze_depth_frame(
+    depth_m: np.ndarray,
+    depth_norm: np.ndarray,
+    far_clip: float,
     fx: float,
     fy: float,
-) -> Optional[Tuple[float, float, float, float]]:
-    cx = width * 0.5
-    cy = height * 0.5
-    rot_t = cam_rot.T
-    projected: List[Tuple[float, float]] = []
-    for pt in points:
-        rel = pt - cam_pos
-        cam_coord = rot_t @ rel
-        if cam_coord[2] <= 0:
-            return None
-        u = fx * (cam_coord[0] / cam_coord[2]) + cx
-        v = fy * (cam_coord[1] / cam_coord[2]) + cy
-        projected.append((u, v))
-    xs = [p[0] for p in projected]
-    ys = [p[1] for p in projected]
-    min_u, max_u = min(xs), max(xs)
-    min_v, max_v = min(ys), max(ys)
-    if max_u <= 0 or max_v <= 0 or min_u >= width or min_v >= height:
+    sensor_matrix: Optional[np.ndarray],
+    band: float,
+) -> Optional[DepthAnalysis]:
+    mask = np.isfinite(depth_m)
+    if depth_norm is not None:
+        mask &= depth_norm < (1.0 - 1e-6)
+    else:
+        mask &= depth_m < far_clip - 1e-4
+    if not np.any(mask):
         return None
-    min_u = max(0.0, min_u)
-    min_v = max(0.0, min_v)
-    max_u = min(float(width), max_u)
-    max_v = min(float(height), max_v)
-    return (min_u, min_v, max_u, max_v)
+    all_depths = depth_m[mask]
+    if all_depths.size == 0:
+        return None
+    min_depth = float(all_depths.min())
+    depth_span_p = float(np.percentile(all_depths, 95) - min_depth)
+    adaptive_band = max(band, depth_span_p + 1e-3)
+    band_limit = min(far_clip, min_depth + adaptive_band)
+    obj_mask = mask & (depth_m <= band_limit)
+    if not np.any(obj_mask):
+        obj_mask = mask
+    ys, xs = np.where(obj_mask)
+    min_x, max_x = int(xs.min()), int(xs.max())
+    min_y, max_y = int(ys.min()), int(ys.max())
+    if fx <= 0 or fy <= 0:
+        bbox = (min_x, min_y, max_x, max_y)
+        return DepthAnalysis(bbox, 0.0, 0.0)
+    depths = depth_m[ys, xs]
+    cx = depth_m.shape[1] / 2.0
+    cy = depth_m.shape[0] / 2.0
+    x_cam = (xs - cx) * depths / fx
+    y_cam = (cy - ys) * depths / fy
+    width_m = float(np.max(x_cam) - np.min(x_cam)) if x_cam.size else 0.0
+    height_m = float(np.max(y_cam) - np.min(y_cam)) if y_cam.size else 0.0
+    world_min_z = None
+    world_max_z = None
+    if sensor_matrix is not None and depths.size:
+        R = sensor_matrix[:, :3]
+        t = sensor_matrix[:, 3]
+        cam_pts = np.stack([x_cam, y_cam, depths], axis=1)
+        world_pts = cam_pts @ R.T + t
+        if world_pts.size:
+            world_min_z = float(np.min(world_pts[:, 2]))
+            world_max_z = float(np.max(world_pts[:, 2]))
+    bbox = (min_x, min_y, max_x, max_y)
+    return DepthAnalysis(bbox, width_m, height_m, world_min_z, world_max_z)
 
 
-def to_yolo(
-    bbox: Tuple[float, float, float, float],
-    width: int,
-    height: int,
-    flip_horizontal: bool,
-) -> Tuple[float, float, float, float]:
-    min_u, min_v, max_u, max_v = bbox
-    if flip_horizontal:
-        min_u, max_u = width - max_u, width - min_u
-    cx = (min_u + max_u) * 0.5 / width
-    cy = (min_v + max_v) * 0.5 / height
-    w = (max_u - min_u) / width
-    h = (max_v - min_v) / height
-    return (cx, cy, w, h)
+def bbox_px_to_yolo(bbox_px: Tuple[int, int, int, int], img_w: int, img_h: int) -> Tuple[float, float, float, float]:
+    min_x, min_y, max_x, max_y = bbox_px
+    min_x = np.clip(min_x, 0, img_w - 1)
+    max_x = np.clip(max_x, 0, img_w - 1)
+    min_y = np.clip(min_y, 0, img_h - 1)
+    max_y = np.clip(max_y, 0, img_h - 1)
+    w = max(1, max_x - min_x)
+    h = max(1, max_y - min_y)
+    cx = (min_x + max_x) / 2.0 / img_w
+    cy = (min_y + max_y) / 2.0 / img_h
+    return cx, cy, w / img_w, h / img_h
 
 
-def save_image(image: np.ndarray, path: Path) -> None:
-    Image.fromarray(image).save(path)
-
-
-def write_label(path: Path, class_id: int, bbox: Tuple[float, float, float, float]) -> None:
-    with path.open('w', encoding='utf-8') as fp:
-        fp.write(f'{class_id} {bbox[0]:.6f} {bbox[1]:.6f} {bbox[2]:.6f} {bbox[3]:.6f}\n')
-
-
-def label_key(name: str) -> str:
-    return name.replace(' ', '_')
-
-
-def _aligned_euler(euler: Tuple[float, float, float]) -> Tuple[float, float, float]:
-    """Return Coppelia-friendly Euler orientation so optical axis matches +X."""
-    return (euler[0], euler[1] - math.pi * 0.5, euler[2])
-
-
-def main() -> int:
-    args = parse_args()
-    print(f'[capture_scene_objects] Export directory: {args.output}', flush=True)
-    sim = connect(args.host, args.port)
-    print(f'[capture_scene_objects] Connected to {args.host}:{args.port}', flush=True)
-    ensure_sim_running(sim)
-    print('[capture_scene_objects] Simulation running (stepping mode).', flush=True)
-
-    robot_handle = get_handle(sim, args.robot)
-    source_sensor = get_handle(sim, args.vision_sensor)
-    sensor_handle = clone_sensor(sim, source_sensor)
-    robot_base_pos = sim.getObjectPosition(robot_handle, sim.handle_world)
-    width, height, fov_deg = query_sensor_info(sim, sensor_handle)
-    fy = (height * 0.5) / math.tan(math.radians(fov_deg * 0.5))
-    fx = fy * (width / height)
-    print(f'[capture_scene_objects] Camera resolution {width}x{height}, fov={fov_deg:.1f}°', flush=True)
-
-    capture_origin = np.array(
-        [
-            float(robot_base_pos[0]),
-            float(robot_base_pos[1]),
-            float(robot_base_pos[2]) + max(0.5, args.arena_height) + 3.0,
-        ]
+def estimate_size_with_depth(
+    sim,
+    sensor_handle: int,
+    arena_center: np.ndarray,
+    cam_z: float,
+    res_w: int,
+    res_h: int,
+    near_clip: float,
+    far_clip: float,
+    fx: float,
+    fy: float,
+    delay: float,
+    band: float,
+    log_fn = None,
+) -> Optional[DepthAnalysis]:
+    log = log_fn or (lambda _msg: None)
+    log('estimate_size_with_depth: positioning test sensor')
+    test_dist = 3.0
+    cam_pos = np.array([arena_center[0] + test_dist, arena_center[1], cam_z])
+    target = arena_center.copy()
+    target[2] = cam_z
+    mat = get_look_at_matrix(cam_pos, target)
+    sim.setObjectMatrix(sensor_handle, sim.handle_world, mat)
+    log('estimate_size_with_depth: initial step')
+    sim.step()
+    if delay > 0:
+        log(f'estimate_size_with_depth: sleeping {delay:.3f}s to render')
+    time.sleep(delay)
+    log('estimate_size_with_depth: capturing RGBD...')
+    rgb, depth, depth_norm = capture_rgbd(sim, sensor_handle, res_w, res_h, near_clip, far_clip)
+    log(f'estimate_size_with_depth: capture finished (RGB sum={np.sum(rgb)})')
+    sensor_matrix = np.array(mat, dtype=float).reshape((3, 4))
+    stats = analyze_depth_frame(depth, depth_norm, far_clip, fx, fy, sensor_matrix, band)
+    if not stats:
+        log('estimate_size_with_depth: depth_info None')
+        return None
+    log(
+        'estimate_size_with_depth: width={:.3f} height={:.3f} minZ={}'.format(
+            stats.width_m,
+            stats.height_m,
+            'NA' if stats.world_min_z is None else f'{stats.world_min_z:.3f}',
+        )
     )
-    floor_handle = create_capture_floor(sim, capture_origin)
-    try:
-        default_cam = sim.getObject('/DefaultCamera')
-    except Exception:
-        default_cam = None
-    if default_cam is not None:
-        eye_offset = np.array([0.0, -4.0, 2.0])
-        eye_pos = capture_origin + eye_offset
-        target = capture_origin.copy()
-        target[2] += 0.25
-        sim.setObjectPosition(default_cam, sim.handle_world, eye_pos.tolist())
-        try:
-            rot = look_at_matrix(eye_pos, target)
-            euler = _aligned_euler(rotation_to_euler(rot))
-            sim.setObjectOrientation(default_cam, sim.handle_world, list(euler))
-        except ValueError:
-            pass
+    return stats
 
-    default_filter = Path(__file__).resolve().parent / 'capture_objects.json'
-    allowed_names = load_allowed_names(default_filter)
 
-    handles = sim.getObjectsInTree(sim.handle_scene, sim.handle_all, 0)
-    scene_objects: List[SceneObject] = []
-    seen_names: set[str] = set()
-    for handle in handles:
-        if handle in (robot_handle, sensor_handle):
+def capture_frame_with_depth_analysis(
+    sim,
+    sensor_handle: int,
+    res_w: int,
+    res_h: int,
+    near_clip: float,
+    far_clip: float,
+    fx: float,
+    fy: float,
+    delay: float,
+    band: float,
+    quit_watcher: Optional[QuitWatcher] = None,
+    viewer: Optional['DebugViewer'] = None,
+) -> Tuple[Optional[np.ndarray], Optional[DepthAnalysis]]:
+    for attempt in range(3):
+        check_quit(quit_watcher, viewer)
+        sim.step()
+        time.sleep(delay)
+        rgb, depth, depth_norm = capture_rgbd(sim, sensor_handle, res_w, res_h, near_clip, far_clip)
+        if np.sum(rgb) == 0:
             continue
-        bbox = object_bbox(sim, handle)
-        if bbox is None:
+        sensor_matrix_np = np.array(sim.getObjectMatrix(sensor_handle, sim.handle_world)).reshape((3, 4))
+        analysis = analyze_depth_frame(depth, depth_norm, far_clip, fx, fy, sensor_matrix_np, band)
+        if not analysis:
             continue
-        name = sim.getObjectAlias(handle, 0) or f'obj_{handle}'
-        if allowed_names is not None and name not in allowed_names:
-            continue
-        if name in seen_names:
-            continue
-        seen_names.add(name)
-        diag = np.linalg.norm(bbox[1] - bbox[0])
-        if diag > args.max_bbox_diagonal:
-            continue
-        pos = sim.getObjectPosition(handle, sim.handle_world)
-        scene_objects.append(
-            SceneObject(
-                handle=handle,
-                name=name,
-                position=(float(pos[0]), float(pos[1]), float(pos[2])),
-                bbox_min=bbox[0],
-                bbox_max=bbox[1],
-            )
+        return rgb, analysis
+    return None, None
+
+
+def optimize_camera_distance_for_pose(
+    sim,
+    sensor_handle: int,
+    arena_center: np.ndarray,
+    cam_z: float,
+    yaw: float,
+    res_w: int,
+    res_h: int,
+    near_clip: float,
+    far_clip: float,
+    fx: float,
+    fy: float,
+    delay: float,
+    band: float,
+    dbg,
+    quit_watcher: Optional[QuitWatcher] = None,
+    viewer: Optional['DebugViewer'] = None,
+) -> Optional[Tuple[np.ndarray, DepthAnalysis]]:
+    max_dist = 6.0
+    min_dist = 0.7
+    target_margin_px = max(5, int(0.10 * min(res_w, res_h)))
+    dist = max_dist
+    best: Optional[Tuple[np.ndarray, DepthAnalysis, float, float]] = None
+    for step in range(10):
+        check_quit(quit_watcher, viewer)
+        cx = arena_center[0] + dist * math.cos(yaw)
+        cy = arena_center[1] + dist * math.sin(yaw)
+        cam_pos = np.array([cx, cy, cam_z])
+        target = arena_center.copy()
+        target[2] = cam_z
+        mat = get_look_at_matrix(cam_pos, target)
+        sim.setObjectMatrix(sensor_handle, sim.handle_world, mat)
+        dbg(f'Pose yaw={math.degrees(yaw):.1f}° tentativa dist={dist:.2f} m')
+        rgb, analysis = capture_frame_with_depth_analysis(
+            sim,
+            sensor_handle,
+            res_w,
+            res_h,
+            near_clip,
+            far_clip,
+            fx,
+            fy,
+            delay,
+            band,
+            quit_watcher,
+            viewer,
         )
-    if not scene_objects:
-        print('[capture_scene_objects] No objects with valid bounding boxes found.', flush=True)
-        sim.stopSimulation()
-        return 0
+        if analysis is None or rgb is None:
+            dist = max(dist * 0.85, min_dist)
+            continue
+        bbox = analysis.bbox_px
+        width_px = max(1, bbox[2] - bbox[0])
+        height_px = max(1, bbox[3] - bbox[1])
+        coverage = (width_px / res_w) * (height_px / res_h)
+        margin = min(bbox[0], res_w - 1 - bbox[2], bbox[1], res_h - 1 - bbox[3])
+        dbg(
+            f'Pose yaw={math.degrees(yaw):.1f}° dist={dist:.2f} m -> coverage={coverage:.3f} margin={margin:.1f}px'
+        )
+        if best is None or coverage > best[2]:
+            best = (rgb, analysis, coverage, dist)
+        if margin <= target_margin_px or dist <= min_dist + 1e-3:
+            return rgb, analysis
+        new_dist = max(dist * 0.85, min_dist)
+        if abs(new_dist - dist) < 1e-3:
+            break
+        dist = new_dist
+    if best:
+        dbg(
+            f'Pose yaw={math.degrees(yaw):.1f}° usando melhor cobertura {best[2]:.3f} dist={best[3]:.2f} m'
+        )
+        return best[0], best[1]
+    return None
 
-    print('[capture_scene_objects] Objects eligible for capture:')
-    for idx, obj in enumerate(scene_objects):
-        print(f'  [{idx:02d}] {obj.name} at {obj.position}')
 
-    images_dir = args.output / 'images'
-    labels_dir = args.output / 'labels'
-    images_dir.mkdir(parents=True, exist_ok=True)
-    labels_dir.mkdir(parents=True, exist_ok=True)
-    class_ids = {label_key(obj.name): i for i, obj in enumerate(scene_objects)}
+def main():
+    args = parse_args()
+    for d in ['images', 'labels', 'debug']:
+        (args.output / d).mkdir(parents=True, exist_ok=True)
 
-    sensor_height = float(capture_origin[2] + 0.2)
-    sim.setObjectPosition(sensor_handle, sim.handle_world, [capture_origin[0], capture_origin[1], sensor_height])
-    sim.setObjectOrientation(sensor_handle, sim.handle_world, list(_aligned_euler((0.0, 0.0, 0.0))))
-    capture_center = capture_origin.copy()
+    debug_enabled = os.environ.get('CAPTURE_SCENE_DEBUG', '').lower() in {'1', 'true', 'yes'}
+
+    def dbg(msg: str) -> None:
+        if debug_enabled:
+            ts = time.strftime('%H:%M:%S')
+            print(f"[DEBUG {ts}] {msg}")
+
+    sim = None
+    sensor = None
     total = 0
-    for obj in scene_objects:
-        print(f'[capture_scene_objects] Capturing {obj.name}...', flush=True)
-        dup_handle = duplicate_object(sim, obj.handle)
-        if dup_handle is None:
-            print('  -> skipping: failed to duplicate object.')
-            continue
+    viewer = DebugViewer(True)
+    if not viewer.enabled:
+        print('Warning: Tkinter unavailable - debug viewer disabled.')
+    with QuitWatcher() as quit_watcher:
         try:
-            sim.setObjectOrientation(dup_handle, sim.handle_world, [0.0, 0.0, 0.0])
-        except Exception:
-            pass
-        bbox = object_bbox(sim, dup_handle)
-        if bbox is None:
-            print('  -> skipping: duplicate missing bbox.')
-            remove_object_tree(sim, dup_handle)
-            continue
-        mins, maxs = bbox
-        center_local = (mins + maxs) * 0.5
-        size = maxs - mins
-        place_offset = np.array(
-            [
-                -center_local[0],
-                -center_local[1],
-                -mins[2],
-            ],
-            dtype=float,
-        )
-        object_pos = capture_center + place_offset
-        sim.setObjectPosition(dup_handle, sim.handle_world, object_pos.tolist())
-        target_world = np.array([capture_center[0], capture_center[1], sensor_height])
-        base_extent = max(size[0], size[1])
-        successful = False
-        last_reason = 'unknown'
-        default_distance = 1.2
-        yaw_angles = np.linspace(0.0, 2.0 * math.pi, num=max(1, args.yaw_samples), endpoint=False) + (math.pi * 0.5)
-        for yaw in yaw_angles:
-            for scale in (1.0, 0.7, 0.5, 0.35):
-                adaptive_distance = max(0.3, scale * default_distance, 0.4 * base_extent)
-                offset = np.array(
-                    [
-                        adaptive_distance * math.cos(yaw),
-                        adaptive_distance * math.sin(yaw),
-                        0.0,
-                    ]
+            print(f"--- Connecting to {args.host}:{args.port} ---")
+            sim = connect(args.host, args.port)
+            dbg('Requesting stop of current simulation...')
+            try:
+                sim.stopSimulation()
+                time.sleep(0.5)
+            except Exception:
+                dbg('Ignoring error while stopping simulation, continuing...')
+            sim.setStepping(True)
+            sim.startSimulation()
+            dbg('Simulation restarted in stepping mode.')
+
+            robot = get_handle(sim, args.robot)
+            orig_sensor = get_handle(sim, args.vision_sensor)
+            dbg(f'Robot handle={robot}, sensor handle={orig_sensor}')
+
+            res_w, res_h = 640, 480
+            near_clip, far_clip = 0.01, 10.0
+            try:
+                res = sim.getVisionSensorResolution(orig_sensor)
+                if isinstance(res, list):
+                    res_w, res_h = int(res[0]), int(res[1])
+                args.fov = math.degrees(sim.getObjectFloatParam(orig_sensor, 1004))
+                near_clip = float(sim.getObjectFloatParam(orig_sensor, sim.visionfloatparam_near_clipping))
+                far_clip = float(sim.getObjectFloatParam(orig_sensor, sim.visionfloatparam_far_clipping))
+            except Exception:
+                pass
+            print(f"Sensor config: {res_w}x{res_h}, FOV={args.fov:.1f}")
+            fov_x_rad = math.radians(args.fov)
+            fov_y_rad = 2.0 * math.atan((res_h / res_w) * math.tan(fov_x_rad / 2.0))
+            fx = (res_w / 2.0) / math.tan(fov_x_rad / 2.0)
+            fy = (res_h / 2.0) / math.tan(fov_y_rad / 2.0)
+
+            arena_center = np.array([0.0, 0.0, args.arena_height + 5.0])
+            floor_z = arena_center[2]
+
+            # Clone the original sensor to keep the automatic camera untouched.
+            dbg('Cloning sensor for capture...')
+            sensor = clone_sensor_simple(sim, orig_sensor)
+            try:
+                sensor_fov_rad = sim.getObjectFloatParam(sensor, 1004)
+                if sensor_fov_rad:
+                    args.fov = math.degrees(sensor_fov_rad)
+                    fov_x_rad = sensor_fov_rad
+                    fov_y_rad = 2.0 * math.atan((res_h / res_w) * math.tan(fov_x_rad / 2.0))
+                    fx = (res_w / 2.0) / math.tan(fov_x_rad / 2.0)
+                    fy = (res_h / 2.0) / math.tan(fov_y_rad / 2.0)
+                    print(f"Sensor clonado config: {res_w}x{res_h}, FOV={args.fov:.1f}")
+                near_clip = float(sim.getObjectFloatParam(sensor, sim.visionfloatparam_near_clipping))
+                far_clip = float(sim.getObjectFloatParam(sensor, sim.visionfloatparam_far_clipping))
+            except Exception:
+                print("Cloned sensor config: incomplete parameters")
+
+            allowed_lookup = None
+            allowed_order = None
+            jp = Path(__file__).parent / 'capture_objects.json'
+            if jp.exists():
+                try:
+                    with open(jp) as f:
+                        data = json.load(f)
+                    if isinstance(data, list):
+                        allowed_order = data
+                    elif isinstance(data, dict):
+                        allowed_order = data.get('objects', [])
+                    if allowed_order:
+                        allowed_lookup = set(allowed_order)
+                except Exception:
+                    pass
+
+            scene_objects = []
+            dbg('Listando todos objetos da cena...')
+            all_objs = sim.getObjectsInTree(sim.handle_scene, sim.handle_all, 0)
+
+            print("Escaneando objetos...")
+            for h in all_objs:
+                check_quit(quit_watcher, viewer)
+                if h in [robot, orig_sensor, sensor]:
+                    continue
+                name = object_path(sim, h)
+                # Respect allowlist when provided (expects full object paths).
+                if allowed_lookup and name not in allowed_lookup:
+                    dbg(f'Ignoring {name}: not listed in capture_objects.json')
+                    continue
+
+                bbox = get_bbox_from_params(sim, h, name)
+                if bbox:
+                    diag = np.linalg.norm(bbox[1] - bbox[0])
+                    dbg(f'Object {name}: bbox diag={diag:.2f}')
+                    if diag < args.max_bbox_diagonal:
+                        scene_objects.append(
+                            SceneObject(
+                                h,
+                                name,
+                                bbox[0],
+                                bbox[1],
+                                None,
+                                None,
+                            )
+                        )
+                    else:
+                        dbg(f'Object {name}: discarded, diag {diag:.2f} > limit {args.max_bbox_diagonal}')
+                else:
+                    dbg(f'Object {name}: no valid bbox, ignored')
+
+            print(f"Found {len(scene_objects)} valid objects.")
+            scene_name_set = {obj.name for obj in scene_objects}
+            if allowed_order:
+                class_names = [name for name in allowed_order if name in scene_name_set]
+            else:
+                class_names = sorted(scene_name_set)
+            class_map = {name: i for i, name in enumerate(class_names)}
+
+            cam_z_fixed = floor_z + 0.2
+            dbg(f'Starting capture for {len(scene_objects)} objects...')
+            for obj in scene_objects:
+                check_quit(quit_watcher, viewer)
+                print(f"Capturando: {obj.name}")
+                dbg(f'Duplicando {obj.name} (handle {obj.handle})...')
+
+                copies = sim.copyPasteObjects([obj.handle], 0)
+                if not copies:
+                    continue
+                dup_h = copies[0]
+                sim.setObjectParent(dup_h, sim.handle_world, True)
+                remove_scripts_only(sim, dup_h)
+                dbg(f'{obj.name}: clone handle {dup_h}')
+
+                center_local = (obj.bbox_min + obj.bbox_max) / 2.0
+                obj_matrix = np.array(sim.getObjectMatrix(obj.handle, sim.handle_world)).reshape((3, 4))
+                obj_rot = obj_matrix[:, :3]
+                obj_center_target = arena_center - obj_rot @ center_local
+                obj_orientation = sim.getObjectOrientation(obj.handle, sim.handle_world)
+                half_height = max(float(obj.bbox_max[2] - obj.bbox_min[2]) / 2.0, 0.02)
+                obj_center_target[2] = floor_z + half_height
+
+                sim.setObjectOrientation(dup_h, sim.handle_world, obj_orientation)
+                sim.setObjectPosition(dup_h, sim.handle_world, obj_center_target.tolist())
+
+                sz = obj.bbox_max - obj.bbox_min
+                print(f"Geometric dimensions {obj.name}: X={sz[0]:.3f} Y={sz[1]:.3f} Z={sz[2]:.3f}")
+                dbg(f'{obj.name}: estimating dimensions via depth...')
+                # Depth-based size + Z refinement to keep objects floating over the virtual floor.
+                depth_stats = estimate_size_with_depth(
+                    sim,
+                    sensor,
+                    arena_center,
+                    cam_z_fixed,
+                    res_w,
+                    res_h,
+                    near_clip,
+                    far_clip,
+                    fx,
+                    fy,
+                    args.delay,
+                    args.depth_band,
+                    dbg,
                 )
-                cam_pos = target_world + offset
-                cam_pos[2] = sensor_height
-                try:
-                    rot = look_at_matrix(cam_pos, target_world)
-                    euler = rotation_to_euler(rot)
-                except ValueError as exc:
-                    last_reason = str(exc)
-                    continue
-                sim.setObjectPosition(sensor_handle, sim.handle_world, cam_pos.tolist())
-                sim.setObjectOrientation(sensor_handle, sim.handle_world, list(_aligned_euler(euler)))
-                sim.step()
-                time.sleep(max(0.0, args.delay))
+                if depth_stats:
+                    print(f"Depth dimensions {obj.name}: L={depth_stats.width_m:.3f} m H={depth_stats.height_m:.3f} m")
+                    if adjust_object_height_from_depth(sim, dup_h, floor_z, depth_stats, dbg):
+                        dbg(f'{obj.name}: recalculating stats after Z adjustment...')
+                        refreshed = estimate_size_with_depth(
+                            sim,
+                            sensor,
+                            arena_center,
+                            cam_z_fixed,
+                            res_w,
+                            res_h,
+                            near_clip,
+                            far_clip,
+                            fx,
+                            fy,
+                            args.delay,
+                            args.depth_band,
+                            dbg,
+                        )
+                        if refreshed:
+                            depth_stats = refreshed
+                else:
+                    print(f"Depth dimensions {obj.name}: unavailable (geometric fallback)")
 
-                try:
-                    image, (img_w, img_h) = capture_rgb(
+                angles = np.linspace(0, 2 * math.pi, args.samples, endpoint=False)
+                dbg(f'{obj.name}: starting {len(angles)} orbital samples with dynamic adjustment')
+                for i, yaw in enumerate(angles):
+                    check_quit(quit_watcher, viewer)
+                    dbg(f'{obj.name}: sample {i}/{len(angles)} yaw={math.degrees(yaw):.1f}°')
+                    optimized = optimize_camera_distance_for_pose(
                         sim,
-                        sensor_handle,
-                        flip_horizontal=args.flip_horizontal,
-                        flip_vertical=args.flip_vertical,
+                        sensor,
+                        arena_center,
+                        cam_z_fixed,
+                        yaw,
+                        res_w,
+                        res_h,
+                        near_clip,
+                        far_clip,
+                        fx,
+                        fy,
+                        args.delay,
+                        args.depth_band,
+                        dbg,
+                        quit_watcher,
+                        viewer,
                     )
-                except Exception as exc:
-                    last_reason = f'capture failed: {exc}'
-                    continue
+                    if optimized is None:
+                        dbg(f'{obj.name}: unable to optimize pose {i}')
+                        continue
+                    rgb, analysis = optimized
+                    dbg(
+                        f'{obj.name}: pose {i} final dims {analysis.width_m:.3f}x{analysis.height_m:.3f} m bbox {analysis.bbox_px}'
+                    )
 
-                corners = bbox_corners(mins, maxs)
-                world_matrix = object_matrix(sim, dup_handle)
-                corners_world = transform_points(world_matrix, corners)
-                bbox_proj = project_points(corners_world, cam_pos, rot, img_w, img_h, fx, fy)
-                if bbox_proj is None:
-                    last_reason = 'bbox out of view'
-                    continue
+                    bbox_px = analysis.bbox_px
+                    yolo = bbox_px_to_yolo(bbox_px, res_w, res_h)
+                    safe_name = obj.name.replace('/', '_')
+                    Image.fromarray(rgb).save(args.output / f"images/{safe_name}_{i:03d}.png")
+                    with open(args.output / f"labels/{safe_name}_{i:03d}.txt", "w") as f:
+                        f.write(
+                            f"{class_map[obj.name]} {yolo[0]:.6f} {yolo[1]:.6f} {yolo[2]:.6f} {yolo[3]:.6f}\n"
+                        )
+                    min_x, min_y, max_x, max_y = bbox_px
+                    debug_img = Image.fromarray(rgb.copy())
+                    draw = ImageDraw.Draw(debug_img)
+                    draw.rectangle([(min_x, min_y), (max_x, max_y)], outline=(255, 0, 0), width=2)
+                    debug_path = args.output / f"debug/{safe_name}_{i:03d}.png"
+                    debug_img.save(debug_path)
+                    viewer.show(np.array(debug_img), f"{obj.name} pose {i}")
+                    total += 1
+                    dbg(f'{obj.name}: amostra {i} salva com bbox {bbox_px}')
 
-                yolo_box = to_yolo(bbox_proj, img_w, img_h, args.flip_horizontal)
-                if yolo_box[2] * yolo_box[3] < args.min_area:
-                    last_reason = 'projected area too small'
-                    continue
+                remove_object_tree(sim, dup_h)
+                dbg(f'{obj.name}: clone removido')
 
-                safe_name = label_key(obj.name)
-                image_name = f'{safe_name}_{total:04d}.{args.image_format}'
-                label_name = f'{safe_name}_{total:04d}.txt'
-                save_image(image, images_dir / image_name)
-                write_label(labels_dir / label_name, class_ids[safe_name], yolo_box)
-                print(f'  -> saved {image_name}')
-                total += 1
-                successful = True
-                break
-            if successful:
-                break
+            print(f"Sucesso! {total} imagens geradas.")
+        except QuitRequested:
+            print("Exit requested by user (q). Shutting down...")
+        finally:
+            viewer.stop()
+            if sensor and sim:
+                try:
+                    sim.removeObject(sensor)
+                except Exception:
+                    pass
+            if sim:
+                try:
+                    sim.stopSimulation()
+                except Exception:
+                    pass
 
-        if not successful:
-            print(f'  -> skipping {obj.name}: {last_reason}.')
-
-        remove_object_tree(sim, dup_handle)
-
-    remove_object_tree(sim, sensor_handle)
-    remove_object_tree(sim, floor_handle)
-    sim.stopSimulation()
-    print(f'[capture_scene_objects] Completed with {total} captured frames.')
-    return 0
-
-
-if __name__ == '__main__':
-    raise SystemExit(main())
+if __name__ == "__main__":
+    main()

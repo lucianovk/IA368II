@@ -49,6 +49,8 @@ class MyRobotDetectionNode(Node):
             ('fov_deg', 57.0),
             ('use_sim_time', False),
             ('detection_tolerance', 1.0),  # meters
+            ('confidence_threshold', 0.7),
+            ('model_path', ''),  # optional override
         ]
         for param_name, default_value in default_params:
             try:
@@ -66,6 +68,7 @@ class MyRobotDetectionNode(Node):
         self.cy = float(self.get_parameter('cy').value)
         self.fov_deg = float(self.get_parameter('fov_deg').value)
         self.detection_tolerance = float(self.get_parameter('detection_tolerance').value)
+        self.confidence_threshold = float(self.get_parameter('confidence_threshold').value)
         self.intrinsics_computed = False
         self.last_image: Optional[Image] = None
         self.last_depth: Optional[Tuple[Image, np.ndarray]] = None
@@ -96,6 +99,9 @@ class MyRobotDetectionNode(Node):
         self.map_pub = self.create_publisher(MarkerArray, '/detections_markers', 10)
         self.map_timer = self.create_timer(2.0, self.publish_detection_map)
 
+        # Package root (used for models and detections directory)
+        self.package_root = self.resolve_package_root()
+
         # YOLO model
         if YOLO is None:
             self.get_logger().error(
@@ -103,19 +109,28 @@ class MyRobotDetectionNode(Node):
             )
             self.model = None
         else:
-            try:
-                self.model = YOLO(str(Path(__file__).resolve().parents[2] / 'models' / 'yolo11n.pt'))
-                self.get_logger().info('YOLO11n model loaded from models/yolo11n.pt.')
-            except Exception as exc:
-                self.get_logger().error(f'Failed to load YOLO11n: {exc}')
+            model_path = self.resolve_model_path()
+            if model_path is None:
+                self.get_logger().error(
+                    'Failed to locate my_robot.pt. Set parameter model_path or place it under models/.'
+                )
                 self.model = None
+            else:
+                try:
+                    self.model = YOLO(str(model_path))
+                    self.get_logger().info(f'my_robot model loaded: {model_path}')
+                except Exception as exc:
+                    self.get_logger().error(f'Failed to load my_robot: {exc}')
+                    self.model = None
 
         # Directory used to persist detections
-        self.package_root = self.resolve_package_root()
         self.detections_dir = self.package_root / 'detections'
         self.detections_dir.mkdir(parents=True, exist_ok=True)
         self.detections_file = self.detections_dir / 'detections.json'
         self.detection_records: List[Dict[str, Any]] = self.load_existing_detections()
+        self.allowed_labels = self.load_semantic_labels()
+        self.ignored_labels_file = self.detections_dir / 'ignored_detections.txt'
+        self.reset_ignored_labels_log()
         if self.detection_records:
             max_id = max(x['id'] for x in self.detection_records)
             self.det_counter = max_id + 1
@@ -182,6 +197,7 @@ class MyRobotDetectionNode(Node):
         self.map_np = np_data
 
     def run_detection(self):
+        # Make sure we have a model and at least one RGB frame to work with
         if self.model is None:
             return
         if self.last_image is None:
@@ -189,6 +205,7 @@ class MyRobotDetectionNode(Node):
 
         msg = self.last_image
         depth_tuple = self.last_depth
+        # Depth is required to project detections to the map frame
         if depth_tuple is None:
             self.get_logger().warn('No synchronized depth for the current detection.')
             return
@@ -208,6 +225,7 @@ class MyRobotDetectionNode(Node):
             img_rgb = img_np[:, :, ::-1]
 
         try:
+            # Run YOLO inference on the current frame
             results = self.model.predict(img_rgb, verbose=False)
         except Exception as exc:
             self.get_logger().error(f'YOLO inference error: {exc}')
@@ -261,6 +279,8 @@ class MyRobotDetectionNode(Node):
             return
 
         map_updated = False
+        # Process every bounding box returned by YOLO
+        # Every detection is projected into 3D and validated before being stored
         for i, box in enumerate(boxes):
             x1, y1, x2, y2 = box
             u = int((x1 + x2) * 0.5)
@@ -269,10 +289,22 @@ class MyRobotDetectionNode(Node):
             u = max(0, min(u, depth_msg.width - 1))
             v = max(0, min(v, depth_msg.height - 1))
 
-            z = float(depth_arr[v, u])
+            # Search inside the bbox for the closest valid depth sample
+            u1 = max(0, min(int(math.floor(x1)), depth_msg.width - 1))
+            v1 = max(0, min(int(math.floor(y1)), depth_msg.height - 1))
+            u2 = max(0, min(int(math.ceil(x2)), depth_msg.width - 1))
+            v2 = max(0, min(int(math.ceil(y2)), depth_msg.height - 1))
+            region = depth_arr[v1 : v2 + 1, u1 : u2 + 1]
+            valid = np.isfinite(region) & (region > 0.0)
+            if not np.any(valid):
+                self.get_logger().info(
+                    f'Detection {i}: no valid depth samples in bbox ({u1},{v1})-({u2},{v2})'
+                )
+                continue
+            z = float(np.min(region[valid]))
             if z <= 0.0 or np.isnan(z) or np.isinf(z):
                 self.get_logger().info(
-                    f'Detection {i}: invalid depth at ({u},{v}) -> z={z:.3f}'
+                    f'Detection {i}: invalid min depth in bbox ({u1},{v1})-({u2},{v2}) -> z={z:.3f}'
                 )
                 continue
 
@@ -288,7 +320,7 @@ class MyRobotDetectionNode(Node):
                 continue
             dir_cam /= norm
 
-            # Use z as the distance along the ray (camera-to-point)
+            # Use z as the distance along the ray (camera-to-point) to recover 3D point
             point_cam_3d = dir_cam * z
 
             # Build PointStamped in the camera frame
@@ -314,7 +346,13 @@ class MyRobotDetectionNode(Node):
             confidence = (
                 float(confidences[i]) if confidences is not None and len(confidences) > i else 0.0
             )
-            if confidence < 0.7:
+            if confidence < self.confidence_threshold:
+                continue
+            if self.allowed_labels and label not in self.allowed_labels:
+                self.log_ignored_label(label, confidence)
+                self.get_logger().debug(
+                    f'Detection ignored: label "{label}" not in semantic class list.'
+                )
                 continue
 
             match = self.find_matching_detection(label, x_map, y_map)
@@ -328,6 +366,7 @@ class MyRobotDetectionNode(Node):
                 )
                 continue
 
+            # Drop detections that fall outside the known map region
             if not self.is_position_mapped(x_map, y_map):
                 self.get_logger().debug(
                     f'Detection ignored in unmapped area ({x_map:.2f},{y_map:.2f}).'
@@ -346,7 +385,7 @@ class MyRobotDetectionNode(Node):
                     'replacements': 0,
                 }
             )
-            self.save_detection_assets(det_id, img_rgb, box, label)
+            self.save_detection_assets(det_id, img_rgb, box, label, confidence)
             map_updated = True
             self.get_logger().info(
                 f'New detection {det_id}: {label} at (x={x_map:.2f}, y={y_map:.2f}) conf={confidence:.2f}'
@@ -371,13 +410,21 @@ class MyRobotDetectionNode(Node):
         except Exception:
             return False
 
-    def save_detection_assets(self, det_id: int, img_rgb: np.ndarray, box: np.ndarray, label: str) -> None:
+    def save_detection_assets(
+        self,
+        det_id: int,
+        img_rgb: np.ndarray,
+        box: np.ndarray,
+        label: str,
+        confidence: float,
+    ) -> None:
         img_bgr = img_rgb[:, :, ::-1].copy()
         input_path = self.detections_dir / f'input_{det_id}.jpg'
         self.save_image(str(input_path), img_bgr)
 
         annotated = img_bgr.copy()
         self.draw_bbox(annotated, box, (0, 255, 0))
+        self.draw_label(annotated, box, f'{label} {confidence:.2f}')
         detection_path = self.detections_dir / f'detection_{det_id}.jpg'
         self.save_image(str(detection_path), annotated)
 
@@ -395,6 +442,94 @@ class MyRobotDetectionNode(Node):
         image[y2 - thickness:y2, x1:x2] = color
         image[y1:y2, x1 : x1 + thickness] = color
         image[y1:y2, x2 - thickness:x2] = color
+
+    def draw_label(self, image: np.ndarray, box: np.ndarray, text: str) -> None:
+        if not text:
+            return
+        x1, y1, _, _ = [int(max(0, round(v))) for v in box]
+        h, w = image.shape[:2]
+        x1 = max(0, min(x1, w - 1))
+        y1 = max(0, min(y1, h - 1))
+        if cv2 is not None:
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            scale = 0.5
+            thickness = 1
+            (text_w, text_h), baseline = cv2.getTextSize(text, font, scale, thickness)
+            bg_x1 = x1
+            bg_y2 = max(0, y1 - 4)
+            bg_y1 = max(0, bg_y2 - text_h - 6)
+            bg_x2 = min(w - 1, bg_x1 + text_w + 6)
+            cv2.rectangle(image, (bg_x1, bg_y1), (bg_x2, bg_y2), (0, 0, 0), cv2.FILLED)
+            text_org = (bg_x1 + 3, bg_y2 - 3)
+            cv2.putText(image, text, text_org, font, scale, (255, 255, 255), thickness, cv2.LINE_AA)
+            return
+        try:
+            from PIL import Image, ImageDraw, ImageFont  # type: ignore
+        except Exception:
+            return
+        rgb = image[:, :, ::-1]
+        pil_img = Image.fromarray(rgb)
+        draw = ImageDraw.Draw(pil_img)
+        try:
+            font = ImageFont.load_default()
+        except Exception:
+            font = None
+        try:
+            bbox = draw.textbbox((0, 0), text, font=font)
+            text_w = bbox[2] - bbox[0]
+            text_h = bbox[3] - bbox[1]
+        except Exception:
+            text_w, text_h = draw.textsize(text, font=font)
+        bg_x1 = x1
+        bg_y2 = max(0, y1 - 2)
+        bg_y1 = max(0, bg_y2 - text_h - 6)
+        bg_x2 = min(w - 1, bg_x1 + text_w + 6)
+        draw.rectangle([bg_x1, bg_y1, bg_x2, bg_y2], fill=(0, 0, 0))
+        draw.text((bg_x1 + 3, bg_y1 + 3), text, fill=(255, 255, 255), font=font)
+        bgr = np.array(pil_img)[:, :, ::-1]
+        image[:, :, :] = bgr
+
+    def load_semantic_labels(self) -> Set[str]:
+        config_path = self.package_root / 'config' / 'semantic_room_seg_classes.json'
+        if not config_path.exists():
+            self.get_logger().warn(f'Semantic class config not found: {config_path}')
+            return set()
+        try:
+            with config_path.open('r', encoding='utf-8') as fp:
+                data = json.load(fp)
+            labels = {str(k) for k in data.keys()}
+            self.get_logger().info(
+                f'Loaded {len(labels)} semantic classes from semantic_room_seg_classes.json'
+            )
+            return labels
+        except Exception as exc:
+            self.get_logger().error(f'Failed to load semantic class list: {exc}')
+            return set()
+
+    def reset_ignored_labels_log(self) -> None:
+        stamp = self.get_clock().now().to_msg()
+        header = [
+            'Ignored detections (labels not in semantic class list)',
+            f'Start time: {stamp.sec}.{stamp.nanosec:09d}',
+            '',
+        ]
+        try:
+            with self.ignored_labels_file.open('w', encoding='utf-8') as fp:
+                fp.write('\n'.join(header))
+        except Exception as exc:
+            self.warn_once('ignored_log_init', f'Failed to initialize ignored detections log: {exc}')
+
+    def log_ignored_label(self, label: str, confidence: float) -> None:
+        try:
+            stamp = self.get_clock().now().to_msg()
+            timestamp = f'{stamp.sec}.{stamp.nanosec:09d}'
+        except Exception:
+            timestamp = '0.0'
+        try:
+            with self.ignored_labels_file.open('a', encoding='utf-8') as fp:
+                fp.write(f'{timestamp}, label="{label}", conf={confidence:.3f}\n')
+        except Exception as exc:
+            self.warn_once('ignored_log_write', f'Failed to append ignored detection: {exc}')
 
     def find_matching_detection(self, label: str, x: float, y: float) -> Optional[Tuple[int, Dict[str, Any]]]:
         tol = max(self.detection_tolerance, 0.0)
@@ -423,7 +558,7 @@ class MyRobotDetectionNode(Node):
         record['y'] = new_y
         record['confidence'] = new_confidence
         record['replacements'] = replacement_count
-        self.save_detection_assets(record['id'], img_rgb, box, record['label'])
+        self.save_detection_assets(record['id'], img_rgb, box, record['label'], new_confidence)
 
     def archive_detection_assets(self, det_id: int) -> None:
         slots = [self.detections_dir / f'input_{det_id}_replaced_{i}.jpg' for i in (1, 2, 3)]
@@ -458,6 +593,36 @@ class MyRobotDetectionNode(Node):
             return share_dir
         except Exception:
             return current.parent
+
+    def resolve_model_path(self) -> Optional[Path]:
+        """
+        Try to locate the YOLO model.
+        Order:
+        1) Parameter model_path (relative paths resolved against package_root).
+        2) Workspace models directory (../.. /models/my_robot.pt).
+        3) Package-local models directory (./models/my_robot.pt inside package_root).
+        4) Src sibling models directory (../models/my_robot.pt).
+        """
+        param_value = self.get_parameter('model_path').value
+        candidates: List[Path] = []
+        if param_value:
+            custom = Path(str(param_value))
+            if not custom.is_absolute():
+                custom = (self.package_root / custom).resolve()
+            candidates.append(custom)
+
+        candidates.extend(
+            [
+                (self.package_root.parent.parent / 'models' / 'my_robot.pt').resolve(),  # workspace root/models
+                (self.package_root / 'models' / 'my_robot.pt').resolve(),  # package share/models
+                (self.package_root.parent / 'models' / 'my_robot.pt').resolve(),  # src/models
+            ]
+        )
+
+        for path in candidates:
+            if path.exists():
+                return path
+        return None
 
     def publish_detection_map(self) -> None:
         markers = MarkerArray()

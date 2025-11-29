@@ -6,3 +6,5 @@
 **/detections/
 **/pose_graphs/
 yolo11n.pt
+yolo11x.pt
+**/my_robot_dataset/
