@@ -75,7 +75,7 @@ Important paths:
 ## 5. Software Stack & Dependencies
 
 - **ROS 2 Jazzy (recommended)** with nav/visualization packages.
-- `slam_toolbox`, `rf2o_laser_odometry`.
+- `slam_toolbox`, [`rf2o_laser_odometry`](https://github.com/MAPIRlab/rf2o_laser_odometry).
 - `scipy`, `ultralytics` (for YOLO11).
 - GPU (optional) for faster inference; CPU mode works for smaller models.
 
@@ -83,6 +83,14 @@ Install base dependencies:
 ```bash
 sudo apt update
 sudo apt install ros-jazzy-slam-toolbox
+```
+
+Add `rf2o_laser_odometry` to the workspace (if not already present under `src/`):
+```bash
+cd final_project/final_project_ws/src
+git clone https://github.com/MAPIRlab/rf2o_laser_odometry.git
+cd ..
+rosdep install --from-paths src --ignore-src -r -y  # ensure dependencies are resolved
 ```
 
 ## 6. Building the Workspace
@@ -129,4 +137,5 @@ Topics of interest: `/map`, `/topologic_map`, `/semantic_map`, `/detections_mark
 3. K. Okada et al., “Room Recognition in 2D Maps,” [ICRA 2016](https://ieeexplore.ieee.org/document/7487532).  
 4. ROS Wiki – [ipa_room_segmentation](https://wiki.ros.org/ipa_room_segmentation).  
 5. ROS Wiki – [rose2](https://wiki.ros.org/rose2).  
-6. IPA 320 – [ipa_coverage_planning](https://github.com/ipa320/ipa_coverage_planning).
+6. IPA 320 – [ipa_coverage_planning](https://github.com/ipa320/ipa_coverage_planning).  
+7. MAPIRlab – [`rf2o_laser_odometry`](https://github.com/MAPIRlab/rf2o_laser_odometry).
